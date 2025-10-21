@@ -158,21 +158,21 @@ class blk(gr.sync_block):
 
                 dfreq = self.estimate_dfreq_phasor()
                 dphase = self.estimate_phase_offset( peak_magnitude, pulse_mag, dfreq)
-
+                """ 
                 if self.verbose and self.duration_ms > self.pulse_len_ms * (1.0 + self.pulse_len_var) and phase_jumps == 0:
                     print(f"Discarding long pulse of {self.duration_ms} ms but with 0 phase jumps. Peak signal strength of {peak_db} and noise floor {noise_floor_db} with {len(self.pulse_iq)}. Chunk size of {n}", flush=True)
                     self._state = 3 # Start over
                     continue
-                    
+                """
                 pulse_found = True
                 
                 if self.verbose:
-                    print(f"Pulse detected: {self.port} {round(self.start_time_s, 6)}, {self.duration_ms}, {len(self.pulse_iq)}, {round(peak_db,2)}, {round(noise_floor_db,2)}, {pulse_snr_db:.2f}, {dphase:.4f}, {round(dfreq / 1e3, 3)}, {self.inter_ms}. Chunk size of {n}", flush=True)
+                    print(f"Pulse detected: {self.port} {self.start_time_s:.6f}, {self.duration_ms}, {len(self.pulse_iq)}, {peak_db:.2f}, {noise_floor_db:.2f}, {pulse_snr_db:.2f}, {dphase:.4f}, {dfreq / 1e3:.3f}, {self.inter_ms}. Chunk size of {n}", flush=True)
                 elif self.output_type == "stream":
                     print(f"p{self.port},{self.start_time_s:.6f},{(dfreq / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{self.duration_ms},{len(self.pulse_iq)},{dphase:.4f},{n},{self.inter_ms}", flush=True)
                 
                 if hasattr(self, 'csvfile'):
-                    self.writer.writerow([self.port, self.start_idx, round(self.start_time_s, 6), round(self.end_time_s, 6), self.duration_ms, len(self.pulse_iq), round(peak_db,2), round(noise_floor_db,2), phase_jumps, round(phase_offset, 4), round(dfreq / 1e3, 3), self.inter_ms])
+                    self.writer.writerow([self.port, self.start_idx, round(self.start_time_s, 6), round(self.end_time_s, 6), self.duration_ms, len(self.pulse_iq), round(peak_db,2), round(noise_floor_db,2), round(dphase, 4), round(dfreq / 1e3, 3), self.inter_ms])
 
                 # Calculate time since last pulse
                 self.prev_start_time_s = self.start_time_s 
@@ -183,7 +183,7 @@ class blk(gr.sync_block):
                 self.pulse_iq = []
 
         
-        if not pulse_found: # Update noise floor only if no pulse was found in this chunk
+        if not pulse_found and self._state == 0: # Update noise floor only if no pulse was found in this chunk
             self.noise_floor = np.percentile(mag, 90)
 
         if hasattr(self, 'csvfile'):
@@ -274,7 +274,7 @@ class blk(gr.sync_block):
             pulse_iq_corrected = self.pulse_iq[phase_mask] * phase_correction
             phase_offset = np.median(np.angle(pulse_iq_corrected))
 
-        return phase_offset, phase_slope
+        return phase_offset
 
     def estimate_dfreq_fine_fft(self, samples: np.ndarray, sample_rate: float) -> float:
         """

@@ -6,3 +6,5 @@ It initializes new radios and sends data to the main SG control process.
 `gr_detect_pulses.py` is the main Gnu Radio block for detecting pulses.
 
 `gr_airspy.py`, `gr_airspyhf.py`, and `gr_rtlsdr.py` are the flow graphs for each respective dongle.
+
+All files with the suffix ".grc" are GnuRadio Companion flow graph configurations for testing with a GUI.
