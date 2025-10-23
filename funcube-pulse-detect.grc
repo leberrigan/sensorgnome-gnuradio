@@ -148,6 +148,24 @@ blocks:
     coordinate: [2648, 892.0]
     rotation: 0
     state: disabled
+- name: blocks_file_sink_1
+  id: blocks_file_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    append: 'False'
+    comment: ''
+    file: f"raw_iq_funcube_{samp_rate:.0f}.bin"
+    type: complex
+    unbuffered: 'False'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1184, 708.0]
+    rotation: 0
+    state: enabled
 - name: blocks_moving_average_xx_0
   id: blocks_moving_average_xx
   parameters:
@@ -189,18 +207,14 @@ blocks:
     samp_rate: samp_rate / decimation_factor
     verbose: ''
   states:
-    _io_cache: '(''Pulse detection logger'', ''blk'', [(''output_type'', "''file''"),
-      (''verbose'', ''True''), (''filename'', "''output.csv''"), (''port'', ''0''),
-      (''samp_rate'', ''250000''), (''min_snr_db'', ''6''), (''debounce_samples'',
-      ''10''), (''pulse_len_ms'', ''2.5'')], [(''0'', ''float'', 1), (''1'', ''complex'',
-      1)], [], ''\n    Hysteresis + debounce comparator with sample-accurate timestamping.\n    -
-      Streaming output: float32 0.0/1.0\n    - Prints per-pulse CSV to stdout\n    '',
-      [''filename'', ''min_snr_db'', ''output_type'', ''port'', ''pulse_len_ms'',
-      ''samp_rate'', ''verbose''])'
+    _io_cache: ('Pulse detector', 'blk', [('output_type', "'file'"), ('verbose', 'True'),
+      ('filename', "'output.csv'"), ('port', '0'), ('samp_rate', '250000'), ('min_snr_db',
+      '6'), ('debounce_samples', '10'), ('pulse_len_ms', '2.5')], [('0', 'float',
+      1), ('1', 'complex', 1)], [], '', [])
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1856, 540.0]
+    coordinate: [1864, 500.0]
     rotation: 0
     state: enabled
 - name: epy_block_1
@@ -285,6 +299,7 @@ connections:
 - [blocks_moving_average_xx_0, '0', epy_block_0, '0']
 - [fft_vxx_0, '0', blocks_complex_to_mag_squared_0_0, '0']
 - [hilbert_fc_0, '0', blocks_complex_to_mag_squared_0, '0']
+- [hilbert_fc_0, '0', blocks_file_sink_1, '0']
 - [hilbert_fc_0, '0', epy_block_0, '1']
 
 metadata:

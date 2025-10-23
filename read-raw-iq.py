@@ -3,18 +3,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 import detect_pulse as pd
 
+selected_profile = "airspyhf"
+
 profiles = {
     "airspymini": {
-        "filename": "../gnuradio/raw_iq_airspymini.bin",
-        "sample_rate": 5e4 * 2
+        "filename": "raw_iq_airspymini_100000.bin",
+        "sample_rate": 100000
     },
     "airspyhf": {
-        "filename": "../gnuradio/raw_iq_airspyhf_192000.bin",
-        "sample_rate": 192e3
+        "filename": "raw_iq_airspyhf_192000.bin",
+        "sample_rate": 192000
+    },
+    "airspyhf": {
+        "filename": "raw_iq_rtlsdr_120000.bin",
+        "sample_rate": 120000
+    },
+    "airspyhf": {
+        "filename": "raw_iq_funcube_48000.bin",
+        "sample_rate": 48000
     }
 }
 
-selected_profile = "airspyhf"
 
 # Load raw I/Q data (int16 interleaved)
 data = np.fromfile(profiles[selected_profile]["filename"], dtype=np.complex64)
