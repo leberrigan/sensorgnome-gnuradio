@@ -101,10 +101,10 @@ class airspy_detect_pulse(gr.top_block):
             port=port, 
             samp_rate=samp_rate / decimation_factor, 
             min_snr_db=6, 
-            debounce_samples=20, 
+            debounce_samples=10, 
             pulse_len_ms=2.5
         )
-        self.blocks_moving_average = blocks.moving_average_ff( int( self.max_pulse_samples / 5), 5 / self.max_pulse_samples, self.max_pulse_samples * 10, 1)
+        self.blocks_moving_average = blocks.moving_average_ff( 5, 1/5, self.max_pulse_samples * 10, 1)
         self.blocks_complex_to_mag_squared = blocks.complex_to_mag_squared(1)
 
 

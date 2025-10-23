@@ -164,7 +164,7 @@ blocks:
     alias: ''
     append: 'False'
     comment: ''
-    file: f"raw_iq_airspyhf_{samp_rate}.bin"
+    file: f"raw_iq_airspyhf_{samp_rate:.0f}.bin"
     type: complex
     unbuffered: 'False'
     vlen: '1'
@@ -174,18 +174,18 @@ blocks:
     bus_structure: null
     coordinate: [1144, 436.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_moving_average_xx_0
   id: blocks_moving_average_xx
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    length: int(max_pulse_samples / 5)
-    max_iter: max_pulse_samples * 10
+    length: '5'
+    max_iter: '4000'
     maxoutbuf: '0'
     minoutbuf: '0'
-    scale: 5 / max_pulse_samples
+    scale: 1/5
     type: float
     vlen: '1'
   states:
@@ -216,14 +216,10 @@ blocks:
     samp_rate: samp_rate / decimation_factor
     verbose: 'True'
   states:
-    _io_cache: '(''Pulse detection logger'', ''blk'', [(''output_type'', "''file''"),
-      (''verbose'', ''True''), (''filename'', "''output.csv''"), (''port'', ''0''),
-      (''samp_rate'', ''250000''), (''min_snr_db'', ''6''), (''debounce_samples'',
-      ''10''), (''pulse_len_ms'', ''2.5'')], [(''0'', ''float'', 1), (''1'', ''complex'',
-      1)], [], ''\n    Hysteresis + debounce comparator with sample-accurate timestamping.\n    -
-      Streaming output: float32 0.0/1.0\n    - Prints per-pulse CSV to stdout\n    '',
-      [''filename'', ''min_snr_db'', ''output_type'', ''port'', ''pulse_len_ms'',
-      ''samp_rate'', ''verbose''])'
+    _io_cache: ('Pulse detector', 'blk', [('output_type', "'file'"), ('verbose', 'True'),
+      ('filename', "'output.csv'"), ('port', '0'), ('samp_rate', '250000'), ('min_snr_db',
+      '6'), ('debounce_samples', '10'), ('pulse_len_ms', '2.5')], [('0', 'float',
+      1), ('1', 'complex', 1)], [], '', [])
     bus_sink: false
     bus_source: false
     bus_structure: null
@@ -615,19 +611,6 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [304, 744.0]
-    rotation: 0
-    state: enabled
-- name: testtest
-  id: epy_module
-  parameters:
-    alias: ''
-    comment: ''
-    source_code: test = 2
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [896, 204.0]
     rotation: 0
     state: enabled
 
