@@ -231,7 +231,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    center_freq: '0'
+    center_freq: freq_offset
     comment: ''
     decim: decimation_factor
     maxoutbuf: '0'
@@ -258,8 +258,8 @@ blocks:
     freq_correction: '0'
     gain: '-24'
     lna: 'True'
-    maxoutbuf: '0'
-    minoutbuf: '0'
+    maxoutbuf: '2048'
+    minoutbuf: '2048'
     samp_rate: samp_rate
     type: fc32
   states:

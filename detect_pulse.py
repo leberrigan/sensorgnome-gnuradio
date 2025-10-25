@@ -15,9 +15,12 @@
 # 
 # 
 # 
+
 import csv
 import numpy as np
 import time
+from sklearn.mixture import GaussianMixture
+
 class Pulse_Detector:
     """
         Detect pulses of a given duration with a minimum snr.
@@ -77,7 +80,9 @@ class Pulse_Detector:
         self.prev_start_time_s = None
         self.noise_floor = None
         self.pulse_iq = []
-        self.time_chunk_start = self.time_init
+        self.reference_time = None
+        self.time_chunk_start = None
+        self.time_error_threshold = 0.1 # seconds
         
         """
             The 'work' function runs once per X samples, where X is the buffer size that gnuradio determines based on processing capacity. It's usually around 2048 samples, but can be lower.
@@ -94,6 +99,20 @@ class Pulse_Detector:
         output = []
         # out = output_items[0]
         n = len(mag) # Number of input items
+        if self.reference_time is None:
+            self.reference_time = time.time()
+        
+        self.time_chunk_start = self.reference_time + self.sample_counter / self.samp_rate
+        
+        time_system = time.time()
+        
+        time_error = time_system - self.time_chunk_start
+
+        if (time_error > self.time_error_threshold): 
+            if self.verbose:
+                print( f"Time error: {(time_error) * 1e3:.3f} ms" )
+            self.sample_counter = 0
+            self.reference_time = time.time()
 
         # Only get noise floor at the beginning if not already set
         if self.noise_floor is None:
@@ -140,7 +159,7 @@ class Pulse_Detector:
                 pulse_mag_smooth = np.convolve(pulse_mag, np.ones(10)/10, mode='valid')
                 # Get the actual start and end times of the pulse by getting the max and min slopes of the magnitude
                 pulse_slope = np.diff( pulse_mag_smooth )
-                middle_idx = int(len(self.pulse_iq) / 2)
+                middle_idx = int(len(pulse_slope) / 2)
                 start_idx = np.argmax( pulse_slope[:middle_idx] )
                 end_idx = middle_idx + np.argmin( pulse_slope[middle_idx:] )
 
@@ -156,8 +175,8 @@ class Pulse_Detector:
                 if ( duration_ms < self.pulse_len_minimum or duration_ms > self.pulse_len_maximum ): # Pulse length is outside expected range
                     if self.verbose:
                         print(f"Pulse discarded due to duration mismatch ({duration_ms} ms): {self.pulse_iq_start_s}, {self.pulse_iq_start_s - self.time_chunk_start}, {start_idx}, {end_idx},{start_time_s - self.time_chunk_start:.6f},{noise_floor_db:.2f},{len(self.pulse_iq)},{n}") 
-                    if self.output_type == "test":
-                        output.append(f"{start_time_s - self.time_chunk_start:.6f},0,0,{noise_floor_db:.2f},0,{duration_ms},{len(self.pulse_iq)},{n},0,0") 
+                    # if self.output_type == "test":
+                    #     output.append(f"{start_time_s - self.time_chunk_start:.6f},0,0,{noise_floor_db:.2f},0,{duration_ms},{len(self.pulse_iq)},{n},0,0") 
                     self._state = 3 # Start over
                     continue 
 
@@ -180,6 +199,13 @@ class Pulse_Detector:
                 dfreq_median, dfreq_interp = self.estimate_dfreq_quadratic()
                 dfreq_phasor = self.estimate_dfreq_phasor()
                 dfreq_cubic = self.estimate_dfreq_fft_cubic()
+
+                if False and self.output_type == "test":
+                    pulse_peaks = self.extract_gmm_peaks()
+                    if len(pulse_peaks) > 0:
+                        for peak_freq, peak_mag in pulse_peaks:
+                            print(f"Peak at {peak_freq:.3f} Hz with magnitude {peak_mag}")
+                    
                 
                 pulse_found = True
                 
@@ -219,7 +245,57 @@ class Pulse_Detector:
         if (self.output_type == "test"):
             return output
         
+        self.sample_counter += n
+
         return n
+
+    def extract_gmm_peaks(self):
+        # FFT and magnitude
+        freqs, mags = self.pulse_fft()
+
+        if freqs is None:
+            return []
+
+        # Reshape for GMM
+        mask = freqs >= 0
+        X = freqs[mask].reshape(-1, 1)
+        mags = mags[mask]
+
+
+        # Find best fitting GMM to frequency distribution
+        models = []
+        if (len(freqs[mask]) < 2):
+            return []
+
+        for k in [1, 2]:
+            gmm = GaussianMixture(n_components=k, random_state=0)
+            gmm.fit(X)
+            models.append((gmm, gmm.bic(X)))
+        best_model = min(models, key=lambda x: x[1])[0]
+
+        # Extract center frequencies and estimate magnitudes
+        centers = best_model.means_.flatten()
+        
+        # Estimate magnitude at each center
+        peak_mags = np.interp(centers, freqs[mask], mags)
+
+        return sorted(zip(centers, peak_mags), key=lambda x: -x[1])
+        
+    def pulse_fft(self):
+        fft_samples = self.pulse_iq 
+        if len(fft_samples) < self.min_fft_size: # Pad to min size
+            fft_samples = np.pad(self.pulse_iq, (0, self.min_fft_size - len(fft_samples)))
+        fft_size = len(fft_samples)
+        fft_window = np.hanning( fft_size )
+        fft = np.fft.fftshift(np.fft.fft(fft_samples * fft_window))
+        fft_magnitude = np.abs(fft)
+        fft_threshold = 0.1 * np.max(fft_magnitude) # 10% of peak
+        fft_mask = fft_magnitude > fft_threshold
+        if np.sum(fft_mask) == 0:
+            return None, None
+        else:
+            freqs = np.fft.fftshift(np.fft.fftfreq( fft_size, d=1/self.samp_rate))
+            return freqs[fft_mask], fft_magnitude[fft_mask]
 
     def estimate_dfreq_centroid(self):
         fft_samples = self.pulse_iq
@@ -245,6 +321,7 @@ class Pulse_Detector:
             freq_centroid = np.average(freqs[fft_mask], weights=fft_magnitude[fft_mask])
 
         return freq_centroid
+
 
     def estimate_dfreq_quadratic(self):
         fft_samples = self.pulse_iq 

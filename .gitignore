@@ -1,3 +1,5 @@
 __pycache__
 *_detect_pulse*.py
 raw_iq*.bin
+jeff*
+output.csv
