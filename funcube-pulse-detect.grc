@@ -9,7 +9,7 @@ options:
     description: FUNcube pulse detection
     gen_cmake: 'On'
     gen_linking: dynamic
-    generate_options: qt_gui
+    generate_options: no_gui
     hier_block_src_path: '.:'
     id: funcube_detect_pulses
     max_nouts: '0'
@@ -33,6 +33,18 @@ options:
     state: enabled
 
 blocks:
+- name: cutoff_frequency
+  id: variable
+  parameters:
+    comment: ''
+    value: 8e3
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [552, 168.0]
+    rotation: 0
+    state: enabled
 - name: decimation_factor
   id: variable
   parameters:
@@ -69,6 +81,18 @@ blocks:
     coordinate: [408, 64.0]
     rotation: 0
     state: enabled
+- name: freq_offset
+  id: variable
+  parameters:
+    comment: ''
+    value: 4e3
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [408, 168.0]
+    rotation: 0
+    state: enabled
 - name: samp_rate
   id: variable
   parameters:
@@ -79,6 +103,18 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [280, 16.0]
+    rotation: 0
+    state: enabled
+- name: transition_width
+  id: variable
+  parameters:
+    comment: ''
+    value: 2e3
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [728, 168.0]
     rotation: 0
     state: enabled
 - name: audio_source_0
@@ -201,11 +237,11 @@ blocks:
     maxoutbuf: '0'
     min_snr_db: '6'
     minoutbuf: '0'
-    output_type: ''
-    port: ''
+    output_type: '"file"'
+    port: '0'
     pulse_len_ms: '2.5'
     samp_rate: samp_rate / decimation_factor
-    verbose: ''
+    verbose: 'True'
   states:
     _io_cache: ('Pulse detector', 'blk', [('output_type', "'file'"), ('verbose', 'True'),
       ('filename', "'output.csv'"), ('port', '0'), ('samp_rate', '250000'), ('min_snr_db',
@@ -273,34 +309,36 @@ blocks:
     coordinate: [2288, 844.0]
     rotation: 0
     state: disabled
-- name: hilbert_fc_0
-  id: hilbert_fc
+- name: freq_xlating_fir_filter_xxx_0
+  id: freq_xlating_fir_filter_xxx
   parameters:
     affinity: ''
     alias: ''
-    beta: '6.76'
+    center_freq: freq_offset
     comment: ''
+    decim: decimation_factor
     maxoutbuf: '0'
     minoutbuf: '0'
-    num_taps: '129'
-    win: window.WIN_HAMMING
+    samp_rate: samp_rate
+    taps: firdes.low_pass(1.0, samp_rate, cutoff_frequency, transition_width, window.WIN_HAMMING)
+    type: fcc
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [792, 596.0]
+    coordinate: [752, 576.0]
     rotation: 0
     state: enabled
 
 connections:
-- [audio_source_0, '0', hilbert_fc_0, '0']
+- [audio_source_0, '0', freq_xlating_fir_filter_xxx_0, '0']
 - [blocks_complex_to_arg_0_0, '0', epy_block_1, '0']
 - [blocks_complex_to_mag_squared_0, '0', blocks_moving_average_xx_0, '0']
 - [blocks_moving_average_xx_0, '0', epy_block_0, '0']
 - [fft_vxx_0, '0', blocks_complex_to_mag_squared_0_0, '0']
-- [hilbert_fc_0, '0', blocks_complex_to_mag_squared_0, '0']
-- [hilbert_fc_0, '0', blocks_file_sink_1, '0']
-- [hilbert_fc_0, '0', epy_block_0, '1']
+- [freq_xlating_fir_filter_xxx_0, '0', blocks_complex_to_mag_squared_0, '0']
+- [freq_xlating_fir_filter_xxx_0, '0', blocks_file_sink_1, '0']
+- [freq_xlating_fir_filter_xxx_0, '0', epy_block_0, '1']
 
 metadata:
   file_format: 1

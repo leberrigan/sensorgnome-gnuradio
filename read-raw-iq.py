@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import detect_pulse as pd
 
-selected_profile = "airspyhf"
+selected_profile = "funcube"
 
 profiles = {
     "airspymini": {
@@ -36,7 +36,7 @@ class Pulse_Analysis:
 
         mags = np.abs(self.raw_iq)
         # Get moving average of magnitude
-        self.mags_smooth = np.convolve(mags, np.ones(10)/10, mode='valid')
+        self.mags_smooth = np.convolve(mags, np.ones(3)/3, mode='valid')
         
         self.pulses = pulse_detector.detect([self.mags_smooth, self.raw_iq])
 
@@ -79,7 +79,7 @@ class Pulse_Analysis:
         pulse_start_secs = [] # seconds
         pulse_end_secs = []   # seconds
         for i in range(0, len(self.pulses)):
-            pulse_start_time_s, pulse_dfreq_cubic, pulse_peak_db, pulse_noise_floor_db, pulse_snr_db, pulse_duration_ms, pulse_sample_lenth, pulse_buffer_size, pulse_dfreq_phasor, pulse_inter_ms = self.pulses[i].split(",")
+            pulse_start_time_s, pulse_dfreq, pulse_peak_db, pulse_noise_floor_db, pulse_snr_db, pulse_duration_ms, pulse_sample_lenth, pulse_buffer_size, pulse_overlap, pulse_inter_ms = self.pulses[i].split(",")
             pulse_start_secs.append( float(pulse_start_time_s) )
             pulse_end_secs.append( float(pulse_start_time_s) + float(pulse_duration_ms) / 1e3 )
             if (self.max_db < float(pulse_peak_db)):

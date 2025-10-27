@@ -19,7 +19,7 @@
 import csv
 import numpy as np
 import time
-from sklearn.mixture import GaussianMixture
+import detect_pulse_overlap as dpo
 
 class Pulse_Detector:
     """
@@ -46,7 +46,7 @@ class Pulse_Detector:
 
     """
 
-    def __init__(self, output_type="test", verbose=True, filename="output.csv", port = 0, samp_rate=250000, min_snr_db=6, debounce_samples: int=10, pulse_len_ms: float=2.5):
+    def __init__(self, output_type="test", verbose=True, filename="output.csv", port = 0, samp_rate=250000, min_snr_db=6, debounce_samples: int=10, pulse_len_ms: float=2.5, pulse_padding_s: float=2.5e-3, freq_min: float=None, freq_max: float=None):
 
         self.filename = filename
         self.output_type = output_type
@@ -59,6 +59,11 @@ class Pulse_Detector:
         self.pulse_len_var = 0.5 # Allowed variability in pulse length (proportionally)
         self.pulse_len_minimum = self.pulse_len_ms * (1.0 - self.pulse_len_var) # Minimum pulse length
         self.pulse_len_maximum = self.pulse_len_ms * (2.0 + self.pulse_len_var * 2) # Max pulse length
+        self.pulse_padding_s = pulse_padding_s
+        self.pulse_padding = int(pulse_padding_s * self.samp_rate) # Samples of padding to add to each side of the pulse for FFT analysis
+
+        self.freq_min = freq_min
+        self.freq_max = freq_max
 
         self.debounce = int(debounce_samples)
         self.time_init = time.time()
@@ -67,9 +72,10 @@ class Pulse_Detector:
             import csv
             self.csvfile = open(self.filename, "w", newline="")
             self.writer = csv.writer(self.csvfile)
-            self.writer.writerow(["port","sample_index_start","ts_start","ts_end","duration_ms","duration_samples","peak_db", "noise_db","phase_jumps", "dphase", "dfreq", "inter_ms"]) # header
+            self.writer.writerow(["port","sample_index_start","ts_start","ts_end","duration_ms","duration_samples","peak_db", "noise_db","phase_jumps", "dphase", "dfreq", "pulse_overlap", "inter_ms"]) # header
         if self.verbose:
-            print("port, sample_index_start, ts_start, ts_end, duration_ms, duration_samples, peak_db, noise_db, phase_jumps, dphase, dfreq, inter_ms") # header
+            print("port, ts_start, ts_start_relative, sample_index_start, duration_samples, duration_ms, dfreq, peak_db, noise_db, snr_db, chunk_size, pulse_overlap, inter_ms") # header
+
 
         # internal state
         self.min_fft_size = 64
@@ -84,6 +90,12 @@ class Pulse_Detector:
         self.time_chunk_start = None
         self.time_error_threshold = 0.1 # seconds
         
+        self.prev_chunk_end_samples = None
+        self.pulse_iq_padding_start = []
+        self.pulse_iq_padding_end = []
+        self.pulse_iq_padded = None
+
+
         """
             The 'work' function runs once per X samples, where X is the buffer size that gnuradio determines based on processing capacity. It's usually around 2048 samples, but can be lower.
 
@@ -97,6 +109,7 @@ class Pulse_Detector:
         raw_iq = input[1]
         pulse_found = False
         output = []
+        timestamps = []
         # out = output_items[0]
         n = len(mag) # Number of input items
         if self.reference_time is None:
@@ -141,7 +154,7 @@ class Pulse_Detector:
                         self._count = 0
                 elif self._count > 0: # Not a rising edge
                     self._count = 0
-                    self._state = 3 # Start over
+                    self._state = 4 # Start over
             elif self._state == 1: # Detecting pulse, looking for falling edge
                 self.pulse_iq.append( raw_iq[i] )
                 if x < fall_thresh: # Potential falling edge
@@ -151,8 +164,8 @@ class Pulse_Detector:
                         self._state = 2
                 elif self._count > 0: # Not a rising edge
                     self._count = 0
-            elif self._state == 2: # Write the pulse to the CSV file
-                
+            elif self._state == 2: # Pad the current pulse by pulse_padding samples on each side
+                timestamps.append( time.time() )
                 # Pulse magnitude
                 pulse_mag = np.abs(self.pulse_iq)
                 # Get rid of small ripples in the magnitude with moving average
@@ -177,7 +190,7 @@ class Pulse_Detector:
                         print(f"Pulse discarded due to duration mismatch ({duration_ms} ms): {self.pulse_iq_start_s}, {self.pulse_iq_start_s - self.time_chunk_start}, {start_idx}, {end_idx},{start_time_s - self.time_chunk_start:.6f},{noise_floor_db:.2f},{len(self.pulse_iq)},{n}") 
                     # if self.output_type == "test":
                     #     output.append(f"{start_time_s - self.time_chunk_start:.6f},0,0,{noise_floor_db:.2f},0,{duration_ms},{len(self.pulse_iq)},{n},0,0") 
-                    self._state = 3 # Start over
+                    self._state = 4 # Start over
                     continue 
 
                 # Get the pulse interval
@@ -194,47 +207,66 @@ class Pulse_Detector:
                 # Get the corrected IQ of the pulse
                 self.pulse_iq = np.array(self.pulse_iq[start_idx:end_idx], dtype=np.complex64)
 
+                self.pulse_iq_padded = np.pad(self.pulse_iq, (self.pulse_padding, self.pulse_padding), 'constant', constant_values=(0, 0))
 
-                dfreq_centroid = self.estimate_dfreq_centroid()
-                dfreq_median, dfreq_interp = self.estimate_dfreq_quadratic()
-                dfreq_phasor = self.estimate_dfreq_phasor()
-                dfreq_cubic = self.estimate_dfreq_fft_cubic()
+                fft_freqs, fft_mags = self.pulse_fft(self.pulse_iq_padded, True)
 
-                if False and self.output_type == "test":
-                    pulse_peaks = self.extract_gmm_peaks()
-                    if len(pulse_peaks) > 0:
-                        for peak_freq, peak_mag in pulse_peaks:
-                            print(f"Peak at {peak_freq:.3f} Hz with magnitude {peak_mag}")
+                fft_threshold = 0.5 * np.max(fft_mags) # 10% of peak
+                freq_masked = fft_freqs[fft_mags > fft_threshold]
+                # print(f"Min freq:{min(freq_masked):.0f} Hz Max freq:{max(freq_masked):.0f} Hz")
+                # if self.output_type == "test":
                     
+                timestamps.append( time.time() )
+                pulse_overlaps = dpo.Detect_Pulse_Overlap(fft_freqs, fft_mags, freq_min=min(freq_masked), freq_max=max(freq_masked))
+                timestamps.append( time.time() )
+                gaussians = pulse_overlaps.analyze()
+                timestamps.append( time.time() )
+                if len(gaussians) > 0:
+                    pulse_overlap = int(len(gaussians) == 2)
+                    for i, gaussian in enumerate(gaussians):
+                        curve, dfreq = gaussian
+                        peak_db = np.max(20 * np.log10(curve + 1e-12))  # avoid log(0)
+                        # print(f"Peak at {dfreq:.3f} Hz with amplitude {max(peak_db):.2f} dB")                        
+                        # Return pulse information
+                        if self.verbose:
+                            print(f"{self.pulse_iq_start_s:.4f}, {self.pulse_iq_start_s - self.time_chunk_start:.4f},{len(self.pulse_iq)},{duration_ms:.2f},{(dfreq / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{n},{pulse_overlap},{inter_ms}") 
+                        if self.output_type == "test":
+                            output.append(f"{start_time_s_0 - self.time_chunk_start:.6f},{(dfreq / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{duration_ms_0},{len(self.pulse_iq)},{n},{pulse_overlap},{inter_ms}") 
+                        elif self.output_type == "stream":
+                            print(f"p{self.port},{start_time_s:.6f},{(dfreq / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{duration_ms},{len(self.pulse_iq)},{n},{pulse_overlap},{inter_ms}", flush=True)
+                        if hasattr(self, 'csvfile'):
+                            self.writer.writerow([self.port, start_idx, round(start_time_s, 6), round(end_time_s, 6), duration_ms, len(self.pulse_iq), round(peak_db,2), round(noise_floor_db,2), round(dfreq / 1e3, 3), inter_ms])
+
+                timestamps.append( time.time() )
+
+                # print(f"Pulse processing time for {len(self.pulse_iq_padded)} samples: {(timestamps[-1] - timestamps[-4]) * 1e3:.3f} ms (refine: {(timestamps[1] - timestamps[0]) * 1e3:.3f} ms, init: {(timestamps[2] - timestamps[1]) * 1e3:.3f} ms, detect: {(timestamps[3] - timestamps[2]) * 1e3:.3f} ms, loop: {(timestamps[4] - timestamps[3]) * 1e3:.3f} ms)")
+                if False:
+                    dfreq_centroid = self.estimate_dfreq_centroid(fft_freqs, fft_mags)
+                    dfreq_median, dfreq_interp = self.estimate_dfreq_quadratic(fft_freqs, fft_mags)
+                    dfreq_phasor = self.estimate_dfreq_phasor()
+                    dfreq_cubic = self.estimate_dfreq_fft_cubic(fft_freqs, fft_mags)
+                    print(f"Frequency offsets: {dfreq_centroid / 1e3:.3f} {dfreq_median / 1e3:.3f} {dfreq_interp / 1e3:.3f} {dfreq_phasor / 1e3:.3f} {dfreq_cubic / 1e3:.3f} {inter_ms}")
+    
                 
                 pulse_found = True
                 
-                if self.verbose:
-                    #print(f"Pulse detected: {self.port} {start_time_s:.6f}, {duration_ms}, {len(self.pulse_iq)}, {peak_db:.2f}, {noise_floor_db:.2f}, {pulse_snr_db:.2f}, {dfreq_cubic / 1e3:.3f}, {inter_ms}. Chunk size of {n}", flush=True)
-                    # print(f"Frequency offsets: {dfreq_centroid / 1e3:.3f} {dfreq_median / 1e3:.3f} {dfreq_interp / 1e3:.3f} {dfreq_phasor / 1e3:.3f} {dfreq_cubic / 1e3:.3f} {inter_ms}")
-                    print(f"{self.pulse_iq_start_s}, {self.pulse_iq_start_s - self.time_chunk_start}, {start_idx}, {end_idx},{start_time_s - self.time_chunk_start:.6f},{(dfreq_cubic / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{duration_ms},{len(self.pulse_iq)},{n},{(dfreq_phasor / 1e3):.3f},{inter_ms}") 
-                
-                if self.output_type == "test":
-                    output.append(f"{start_time_s_0 - self.time_chunk_start:.6f},{(dfreq_cubic / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{duration_ms_0},{len(self.pulse_iq)},{n},{(dfreq_phasor / 1e3):.3f},{inter_ms}") 
-                elif self.output_type == "stream":
-                    print(f"p{self.port},{start_time_s:.6f},{(dfreq_cubic / 1e3):.3f},{peak_db:.2f},{noise_floor_db:.2f},{pulse_snr_db:.2f},{duration_ms},{len(self.pulse_iq)},{n},{(dfreq_phasor / 1e3):.3f},{inter_ms}", flush=True)
-                
-                if hasattr(self, 'csvfile'):
-                    self.writer.writerow([self.port, start_idx, round(start_time_s, 6), round(end_time_s, 6), duration_ms, len(self.pulse_iq), round(peak_db,2), round(noise_floor_db,2), round(dfreq_cubic / 1e3, 3), inter_ms])
-
                 # Calculate time since last pulse
                 self.prev_start_time_s = start_time_s 
                 # Reset vars
-                self._state = 3
+                self._state = 4
             else: # state == 3 -> start over
+                timestamps = []
                 self._state = 0
                 self.pulse_iq = []
+                self.pulse_iq_padding_start = []
 
         # Update the clock once per chunk
         time_estimated = self.time_chunk_start + n / self.samp_rate
         time_system = time.time()
         time_error = time_system - self.time_chunk_start
         self.time_chunk_start = time_estimated + time_error * 0.001 # Slight correction for clock drift
+
+        self.prev_chunk_end_samples = raw_iq[-self.pulse_padding:] # Get the last samples for the next chunk
 
         if not pulse_found and self._state == 0: # Update noise floor only if no pulse was found in this chunk
             self.noise_floor = np.percentile(mag, 90)
@@ -249,38 +281,7 @@ class Pulse_Detector:
 
         return n
 
-    def extract_gmm_peaks(self):
-        # FFT and magnitude
-        freqs, mags = self.pulse_fft()
-
-        if freqs is None:
-            return []
-
-        # Reshape for GMM
-        mask = freqs >= 0
-        X = freqs[mask].reshape(-1, 1)
-        mags = mags[mask]
-
-
-        # Find best fitting GMM to frequency distribution
-        models = []
-        if (len(freqs[mask]) < 2):
-            return []
-
-        for k in [1, 2]:
-            gmm = GaussianMixture(n_components=k, random_state=0)
-            gmm.fit(X)
-            models.append((gmm, gmm.bic(X)))
-        best_model = min(models, key=lambda x: x[1])[0]
-
-        # Extract center frequencies and estimate magnitudes
-        centers = best_model.means_.flatten()
-        
-        # Estimate magnitude at each center
-        peak_mags = np.interp(centers, freqs[mask], mags)
-
-        return sorted(zip(centers, peak_mags), key=lambda x: -x[1])
-        
+    """ 
     def pulse_fft(self):
         fft_samples = self.pulse_iq 
         if len(fft_samples) < self.min_fft_size: # Pad to min size
@@ -296,8 +297,9 @@ class Pulse_Detector:
         else:
             freqs = np.fft.fftshift(np.fft.fftfreq( fft_size, d=1/self.samp_rate))
             return freqs[fft_mask], fft_magnitude[fft_mask]
-
-    def estimate_dfreq_centroid(self):
+    """
+    def estimate_dfreq_centroid(self, fft_freqs, fft_mags):
+        """
         fft_samples = self.pulse_iq
         if len(fft_samples) < self.min_fft_size:
             fft_samples = np.pad(self.pulse_iq, (0, self.min_fft_size - len(self.pulse_iq)))
@@ -308,41 +310,44 @@ class Pulse_Detector:
         fft_magnitude = np.abs(fft)
 
         # Frequency axis
-        freqs = np.fft.fftshift(np.fft.fftfreq(fft_size, d=1/self.samp_rate))
+        freqs = np.fft.fftshift(np.fft.fftfreq(fft_size, d=1/self.samp_rate)) 
+        """
 
         # Apply threshold mask (optional)
-        fft_threshold = 0.1 * np.max(fft_magnitude)
-        fft_mask = fft_magnitude > fft_threshold
+        fft_threshold = 0.1 * np.max(fft_mags)
+        fft_mask = fft_mags > fft_threshold
 
         if np.sum(fft_mask) == 0:
             freq_centroid = 0.0
         else:
             # Spectral centroid: weighted average of frequencies
-            freq_centroid = np.average(freqs[fft_mask], weights=fft_magnitude[fft_mask])
+            freq_centroid = np.average(fft_freqs[fft_mask], weights=fft_mags[fft_mask])
 
         return freq_centroid
 
 
-    def estimate_dfreq_quadratic(self):
+    def estimate_dfreq_quadratic(self, fft_freqs, fft_mags):
+        """
         fft_samples = self.pulse_iq 
         if len(fft_samples) < self.min_fft_size: # Pad to min size
             fft_samples = np.pad(self.pulse_iq, (0, self.min_fft_size - len(fft_samples)))
         fft_size = len(fft_samples)
         fft_window = np.hanning( fft_size )
         fft = np.fft.fftshift(np.fft.fft(fft_samples * fft_window))
-        fft_magnitude = np.abs(fft)
-        fft_threshold = 0.1 * np.max(fft_magnitude) # 10% of peak
-        fft_mask = fft_magnitude > fft_threshold
+        fft_mags = np.abs(fft)
+        """
+        fft_threshold = 0.1 * np.max(fft_mags) # 10% of peak
+        fft_mask = fft_mags > fft_threshold
         if np.sum(fft_mask) == 0:
             freq_interp = 0.0
         else:
-            freqs = np.fft.fftshift(np.fft.fftfreq( fft_size, d=1/self.samp_rate))
-            freq_median = float( np.median(freqs[fft_mask]) )   
-            freq_peak = np.argmax(fft_magnitude)
-            if 0 < freq_peak < len(fft_magnitude)-1:
-                y0, y1, y2 = fft_magnitude[freq_peak-1:freq_peak+2]
+            # fft_freqs = np.fft.fftshift(np.fft.fftfreq( fft_size, d=1/self.samp_rate))
+            freq_median = float( np.median(fft_freqs[fft_mask]) )   
+            freq_peak = np.argmax(fft_mags)
+            if 0 < freq_peak < len(fft_mags)-1:
+                y0, y1, y2 = fft_mags[freq_peak-1:freq_peak+2]
                 p = (y2 - y0) / (2*(2*y1 - y2 - y0))
-                freq_interp = freqs[freq_peak] + p * (freqs[1] - freqs[0])
+                freq_interp = fft_freqs[freq_peak] + p * (fft_freqs[1] - fft_freqs[0])
 
         return freq_median, freq_interp
 
@@ -363,7 +368,7 @@ class Pulse_Detector:
         
         return float(dfreq_hz)
 
-    def estimate_dfreq_fft_cubic(self, zero_pad=True):
+    def estimate_dfreq_fft_cubic(self, fft_freqs, fft_mags, zero_pad=True):
         """
         FFT-based dfreq estimate using Hamming window and cubic interpolation (matches repo).
         Returns (dfreq_hz, bin_est, peak_bin, peak_mag).
@@ -399,14 +404,14 @@ class Pulse_Detector:
 
         # full complex FFT (so we can handle negative frequencies explicitly)
         X = np.fft.fft(buf)
-        mags = np.abs(X)
-        magsq = mags * mags
+        fft_mags = np.abs(X)
+        fft_mags_sq = fft_mags * fft_mags
 
-        peak_bin = int(np.argmax(mags))
-        peak_mag = float(mags[peak_bin])
+        peak_bin = int(np.argmax(fft_mags))
+        peak_mag = float(fft_mags[peak_bin])
 
         # cubic sub-bin interpolation (match repo's FreqEstimator::estimateBinOffset)
-        delta = self.estimate_bin_offset_cubic(magsq, peak_bin)
+        delta = self.estimate_bin_offset_cubic(fft_mags_sq, peak_bin)
         bin_est = peak_bin + delta
 
         # map bins above Nyquist to negative frequencies (same as repo logic)
@@ -502,6 +507,54 @@ class Pulse_Detector:
         if x <= 1:
             return 1
         return 1 << int(np.ceil(np.log2(x)))
+
+
+    def pulse_fft(self, pulse_iq, masked=True, overlap=0.75):
+        if len(pulse_iq) < self.min_fft_size:
+            window_size = self.min_fft_size
+        else:
+            window_size = len(pulse_iq)
+
+        step_size = int(window_size * (1 - overlap))
+        if step_size < 1:
+            raise ValueError("Overlap too high — step size must be >= 1")
+
+        # Pad if needed
+        if len(pulse_iq) < window_size:
+            pulse_iq = np.pad(pulse_iq, (0, window_size - len(pulse_iq)))
+
+        n_windows = max(1, (len(pulse_iq) - window_size) // step_size + 1)
+        fft_accum = []
+
+        for i in range(n_windows):
+            start = i * step_size
+            end = start + window_size
+            segment = pulse_iq[start:end]
+
+            if len(segment) < window_size:
+                segment = np.pad(segment, (0, window_size - len(segment)))
+
+            windowed = segment * np.hanning(window_size)
+            fft = np.fft.fftshift(np.fft.fft(windowed))
+            fft_magnitude = np.abs(fft)
+            fft_accum.append(fft_magnitude)
+
+        # Combine spectra (average)
+        fft_magnitude_avg = np.mean(fft_accum, axis=0)
+        freqs = np.fft.fftshift(np.fft.fftfreq(window_size, d=1/self.samp_rate))
+
+        # Apply threshold mask
+        fft_threshold = 0.01 * np.max(fft_magnitude_avg)
+        fft_mask = fft_magnitude_avg > fft_threshold
+
+
+        if np.sum(fft_mask) == 0:
+            return None, None
+
+        if masked:
+            return freqs[fft_mask], fft_magnitude_avg[fft_mask]
+        else:
+            return freqs, fft_magnitude_avg
 
     def __del__(self):
         if hasattr(self, 'csvfile'):
