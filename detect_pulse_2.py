@@ -216,9 +216,6 @@ class Pulse_Detector:
             self.csvfile.flush()
 
         self.sample_counter += len(return_samples)
-        print("Pre FFT results:", self.pre_fft_results)
-        for fun in self.times:
-            print(f"Time for {fun}: {self.times[fun]}s ({100*self.times[fun]/self.times["detect_edges"]:.2f}% of total)")
 
         if (self.output_type == "test"):
             return output, correlations, return_samples, synthesized_signal_iq
@@ -302,7 +299,6 @@ class Pulse_Detector:
             is_dirty = ws < dirty_end
 
             # --- O(1) window statistics (or O(template_length) fallback for dirty windows) ---
-            tmp = time.time()
             if is_dirty:
                 w = signal_magnitude[ws:we]
                 w_sum = float(w.sum())
@@ -312,7 +308,6 @@ class Pulse_Detector:
                 w_sum = float(prefix[we] - prefix[ws])
                 w_sum_sq = float(prefix_sq[we] - prefix_sq[ws])
                 xcorr_val = float(raw_xcorr[ws])
-            self.times["get_stdev"] += time.time() - tmp
 
             mean = w_sum / template_length
             variance = max(0.0, w_sum_sq / template_length - mean * mean)
@@ -320,31 +315,21 @@ class Pulse_Detector:
             if variance < 1e-7:
                 continue
 
-            tmp = time.time()
             norm = np.sqrt(variance * template_length)
             # edge_template is zero-mean: dot(x - mean, t) = dot(x, t) since sum(t)=0
             correlations[i + 1] = xcorr_val / norm
-            self.times["get_correlations2"] += time.time() - tmp
 
             # --- Baseline (first third) and plateau (last third) ---
-            tmp = time.time()
             if is_dirty:
                 baseline = float(signal_magnitude[ws : ws + third].sum()) / third
-            else:
-                baseline = float(prefix[ws + third] - prefix[ws]) / third
-            self.times["get_baseline"] += time.time() - tmp
-
-            tmp = time.time()
-            if is_dirty:
                 plateau = float(signal_magnitude[we - third : we].sum()) / third
             else:
+                baseline = float(prefix[ws + third] - prefix[ws]) / third
                 plateau = float(prefix[we] - prefix[we - third]) / third
-            self.times["get_nearby_correlations"] += time.time() - tmp
 
-            # --- Peak detection (logic unchanged from original) ---
-            # The original stores at [i+1] then checks [i] (computed last iteration) as "current".
+            # --- Peak detection ---
+            # Stores at [i+1] then checks [i] (computed last iteration) as "current".
             # This one-step delay allows the look-ahead comparison to work correctly.
-            tmp = time.time()
             corr = correlations[i]          # peak candidate: set by previous iteration
             prev_corr = correlations[i - 1]
             next_corr = correlations[i + 1] # look-ahead: just computed above
@@ -357,7 +342,6 @@ class Pulse_Detector:
                 continue
 
             # Trailing-window suppression: reject if any earlier peak in the edge window was stronger.
-            # Mirrors the consider_peak() check that prevents multi-firing on one edge.
             trailing_start = max(0, i - self.edge_window_samples)
             if corr <= np.max(correlations[trailing_start:i]):
                 continue
@@ -378,22 +362,17 @@ class Pulse_Detector:
             edge_sample_index = max(0, min(int(round(edge_index)), signal_length - 1))
             edge_time = edge_index / self.samp_rate
 
-            edge_phase_rad = None
-            if signal_iq is not None and 0 <= edge_sample_index < len(signal_iq):
-                sv = signal_iq[edge_sample_index]
-                edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
+            sv = signal_iq[edge_sample_index]
+            edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
 
+            tmp = time.time()
             result = self.compute_edge_fft(signal_iq, edge_time)
             self.times["get_edge_fft"] += time.time() - tmp
             if result is None:
                 continue
 
             tmp = time.time()
-            edge_sample_index = max(0, min(edge_sample_index, len(signal_iq) - 1))
             result["edge_idx"] = edge_sample_index
-            if edge_phase_rad is None:
-                sv = signal_iq[edge_sample_index]
-                edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
             result["edge_phase_rad"] = edge_phase_rad
 
             window_start = result["fft_window_start_idx"]
@@ -422,16 +401,14 @@ class Pulse_Detector:
                 if subtraction["signal_after"] is not None:
                     signal_iq[window_start:window_end] = subtraction["signal_after"]
                     signal_magnitude[window_start:window_end] = np.abs(subtraction["signal_after"])
-                    # Mark this region dirty so future overlapping windows recompute from signal_magnitude
                     dirty_end = max(dirty_end, window_end)
 
-            # Zero the detected peak AND the look-ahead slot set during this same iteration
-            # (pre-subtraction value). Without both zeroes, the next iteration sees
-            # corr=high and prev_corr=0 and fires a spurious re-detection on the same edge.
+            # Zero the detected peak AND the look-ahead slot to prevent re-detection
+            # on the same edge (next iteration sees corr=high, prev_corr=0, fires again).
             correlations[i] = 0.0
             if i + 1 < len(correlations):
                 correlations[i + 1] = 0.0
-            # Block the next 2 iterations: prevents raw_xcorr reuse double-detection when
+            # Block next 2 iterations: prevents raw_xcorr reuse double-detection when
             # apply_best_peak_subtraction returns None and dirty_end is not advanced.
             blocked_until = i + 3
 
