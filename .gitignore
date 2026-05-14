@@ -3,3 +3,6 @@ __pycache__
 raw_iq*.bin
 jeff*
 output.csv
+_debug*
+_check_*
+_benchmark*

@@ -13,6 +13,8 @@ All files with the suffix ".grc" are GnuRadio Companion flow graph configuration
 
 Use `read-raw-iq.py` for reading raw IQ data and producing plots for inspection of `detect_pulse.py` performance.
 
+Use `generate_pulse_overlap.pt` to simulate overlapping pulses. Use `detect_pulse_overlap.py` to detect it.
+
 ### Gnu Radio Companion Flow Graphs
 
 - All flow graphs (with extension ".grc") are set up to use `detect_pulse.py`, but it may be necessary to point the python block to the directory by adding to the start of the python block:

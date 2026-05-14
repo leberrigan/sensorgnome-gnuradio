@@ -1,7 +1,7 @@
 from scipy.signal import decimate
 import numpy as np
 import matplotlib.pyplot as plt
-import detect_pulse as pd
+import detect_pulse_2 as pd
 
 selected_profile = "funcube"
 
