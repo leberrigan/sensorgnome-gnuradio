@@ -16,7 +16,7 @@
 # 
 # 
 import numpy as np
-import detect_pulse as pd
+import detect_pulse_2 as pd
 
 from gnuradio import gr
 
@@ -25,7 +25,7 @@ class blk(gr.sync_block):
     def __init__(self, output_type="file", verbose=True, filename="output.csv", port = 0, samp_rate=250000, min_snr_db=6, debounce_samples: int=10, pulse_len_ms: float=2.5):
         gr.sync_block.__init__(self,
             name="Pulse detector",
-            in_sig=[np.float32, np.complex64],  # magnitude, raw iq
+            in_sig=[np.complex64],  # raw iq only; detector computes magnitude internally
             out_sig=[])
         self.pulse_detector = pd.Pulse_Detector(output_type, verbose, filename, port, samp_rate, min_snr_db, debounce_samples, pulse_len_ms)
         

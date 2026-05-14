@@ -10,7 +10,6 @@
 # GNU Radio version: 3.10.12.0
 
 
-from gnuradio import blocks
 from gnuradio import filter
 from gnuradio.filter import firdes
 from gnuradio import gr
@@ -49,9 +48,6 @@ class airspy_detect_pulse(gr.top_block):
         self.port = port = self.args.port
         self.decimation_factor = decimation_factor = int( samp_rate / self.args.target_rate )
         self.additional_args = additional_args = self.args.additional_args
-        self.pulse_len_ms = 2.5
-        self.max_pulse_samples = int((self.pulse_len_ms / 1000) * (self.samp_rate / self.decimation_factor))
-
         self.gain = json.loads( self.args.gain )
         self.gain_rf = self.gain['rf'] if 'rf' in self.gain else -24
         self.gain_lna = 6 if 'lna' in self.gain and self.gain['lna'] == 6 else 0
@@ -81,7 +77,7 @@ class airspy_detect_pulse(gr.top_block):
         self.soapy_airspyhf_source.set_frequency(0, (freq-freq_offset))
         self.soapy_airspyhf_source.set_frequency_correction(0, 0)
         self.soapy_airspyhf_source.set_gain(0, 'RF', min(max((self.gain_rf), -48.0), 0.0))
-        self.soapy_airspyhf_source.set_gain(0, 'LNA', self.gain_rf)
+        self.soapy_airspyhf_source.set_gain(0, 'LNA', self.gain_lna)
 
         self.freq_xlating_fir_filter = filter.freq_xlating_fir_filter_ccc(
             self.decimation_factor, 
@@ -98,23 +94,17 @@ class airspy_detect_pulse(gr.top_block):
         self.detect_pulses = detect_pulses.blk(
             output_type="stream",
             verbose=self.verbose,
-            port=port, 
-            samp_rate=samp_rate / decimation_factor, 
-            min_snr_db=6, 
-            debounce_samples=10, 
+            port=port,
+            samp_rate=samp_rate / decimation_factor,
+            min_snr_db=6,
+            debounce_samples=10,
             pulse_len_ms=2.5
         )
-        self.blocks_moving_average = blocks.moving_average_ff( 5, 1/5, self.max_pulse_samples * 10, 1)
-        self.blocks_complex_to_mag_squared = blocks.complex_to_mag_squared(1)
-
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.blocks_complex_to_mag_squared, 0), (self.blocks_moving_average, 0))
-        self.connect((self.blocks_moving_average, 0), (self.detect_pulses, 0))
-        self.connect((self.freq_xlating_fir_filter, 0), (self.blocks_complex_to_mag_squared, 0))
-        self.connect((self.freq_xlating_fir_filter, 0), (self.detect_pulses, 1))
+        self.connect((self.freq_xlating_fir_filter, 0), (self.detect_pulses, 0))
         self.connect((self.soapy_airspyhf_source, 0), (self.freq_xlating_fir_filter, 0))
 
 
@@ -156,7 +146,26 @@ class airspy_detect_pulse(gr.top_block):
         self.decimation_factor = decimation_factor
         self.detect_pulses.samp_rate = self.samp_rate / self.decimation_factor
 
+    def set_rf_gain(self, gain):
+        self.gain_rf = float(gain)
+        self.soapy_airspyhf_source.set_gain(0, 'RF', min(max(self.gain_rf, -48.0), 0.0))
+        return "success"
 
+    def set_lna_gain(self, gain):
+        self.gain_lna = int(gain)
+        self.soapy_airspyhf_source.set_gain(0, 'LNA', self.gain_lna)
+        return "success"
+
+    def read_stdin(self):
+        for line in sys.stdin:
+            parts = line.strip().split()
+            if not parts: continue
+            action = parts[0]
+            args = parts[1:]
+            if action in ("set_rf_gain", "set_lna_gain", "set_freq") and args:
+                response = getattr(self, action)(*args)
+                if response:
+                    print(response, flush=True)
 
     # Set up command-line argument parsing
     def get_args(self):
@@ -186,6 +195,8 @@ def main(top_block_cls=airspy_detect_pulse, options=None):
 
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
+
+    threading.Thread(target=tb.read_stdin, daemon=True).start()
 
     try:
         while True:

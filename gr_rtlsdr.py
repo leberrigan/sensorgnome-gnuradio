@@ -10,13 +10,13 @@
 # GNU Radio version: 3.10.12.0
 
 
-from gnuradio import blocks
 from gnuradio import filter
 from gnuradio.filter import firdes
 from gnuradio import gr
 from gnuradio.fft import window
 import sys
 import signal
+import json
 
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
@@ -40,8 +40,6 @@ class rtlsdr_detect_pulse(gr.top_block):
 
         self.samp_rate = samp_rate = float(self.args.samp_rate)
         self.freq = freq = self.args.freq
-        self.gain_rf = gain_rf = self.args.gain_rf
-        self.gain_rf = gain_if = self.args.gain_rf
         self.freq_offset = freq_offset = float(4e3)
         self.filter_cutoff_freq = filter_cutoff_freq = 15e3
         self.filter_transition_width = filter_transition_width = 1e4
@@ -51,6 +49,8 @@ class rtlsdr_detect_pulse(gr.top_block):
         self.decimation_factor = decimation_factor = int( samp_rate / self.args.target_rate )
         self.additional_args = additional_args = self.args.additional_args
         self.gain = json.loads( self.args.gain )
+        self.gain_rf = float(self.gain.get('rf', 15))
+        self.gain_if = float(self.gain.get('if', 0))
 
 
         ##################################################
@@ -67,8 +67,8 @@ class rtlsdr_detect_pulse(gr.top_block):
         self.osmosdr_source.set_dc_offset_mode(0, 0)
         self.osmosdr_source.set_iq_balance_mode(0, 0)
         self.osmosdr_source.set_gain_mode(False, 0)
-        self.osmosdr_source.set_gain(15, 0)
-        self.osmosdr_source.set_if_gain(0, 0)
+        self.osmosdr_source.set_gain(self.gain_rf, 0)
+        self.osmosdr_source.set_if_gain(self.gain_if, 0)
         self.osmosdr_source.set_bb_gain(20, 0)
         self.osmosdr_source.set_antenna('', 0)
         self.osmosdr_source.set_bandwidth(0, 0)
@@ -87,23 +87,17 @@ class rtlsdr_detect_pulse(gr.top_block):
         self.detect_pulses = detect_pulses.blk(
             output_type="stream",
             verbose=self.verbose,
-            port=port, 
-            samp_rate=samp_rate / decimation_factor, 
-            min_snr_db=6, 
-            debounce_samples=10, 
+            port=port,
+            samp_rate=samp_rate / decimation_factor,
+            min_snr_db=6,
+            debounce_samples=10,
             pulse_len_ms=2.5
         )
-        self.blocks_moving_average = blocks.moving_average_ff(3, (1/3), 4000, 1)
-        self.blocks_complex_to_mag_squared = blocks.complex_to_mag_squared(1)
-
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.blocks_complex_to_mag_squared, 0), (self.blocks_moving_average, 0))
-        self.connect((self.blocks_moving_average, 0), (self.detect_pulses, 0))
-        self.connect((self.freq_xlating_fir_filter, 0), (self.blocks_complex_to_mag_squared, 0))
-        self.connect((self.freq_xlating_fir_filter, 0), (self.detect_pulses, 1))
+        self.connect((self.freq_xlating_fir_filter, 0), (self.detect_pulses, 0))
         self.connect((self.osmosdr_source, 0), (self.freq_xlating_fir_filter, 0))
 
     def read_stdin(self):
@@ -113,8 +107,8 @@ class rtlsdr_detect_pulse(gr.top_block):
             response = None
             action = parts[0]
             args = parts[1:]
-            if action in ("set_rf_gain","set_ir_gain") and args:
-                response = getattr(self, action)( args )
+            if action in ("set_rf_gain", "set_if_gain", "set_freq") and args:
+                response = getattr(self, action)(*args)
                 if response:
                     print(response, flush=True)
             
@@ -150,7 +144,7 @@ class rtlsdr_detect_pulse(gr.top_block):
 
     def set_if_gain(self, gain):
         self.gain_if = float( gain )
-        self.osmosdr_source.set_gain(gain, 0)
+        self.osmosdr_source.set_if_gain(self.gain_if, 0)
         return "success"
 
     def get_fft_size(self):
@@ -178,7 +172,7 @@ class rtlsdr_detect_pulse(gr.top_block):
         parser.add_argument('-f', '--freq', help='Frequency', default = 166376000, type = float)
         parser.add_argument('-v', '--verbose', help='Print messages', default = False, action="store_true")
         parser.add_argument('-a', '--additional_args', help='Arguments to pass on to osmosdr on init', default = "sensitivity=21", type = str)
-        parser.add_argument('-g', '--gain', help='Gain', default = "{rf:49.6,if:20}", type = str)
+        parser.add_argument('-g', '--gain', help='Gain as JSON, e.g. \'{"rf":15,"if":0}\'', default = '{"rf":15,"if":0}', type = str)
         return parser.parse_args()
 
 

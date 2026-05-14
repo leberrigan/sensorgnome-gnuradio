@@ -39,22 +39,26 @@ class GRH:
 			port = int(args[0])
 			response = self.kill_device(port)
 
-		elif action in ( "rf_gain", "if_gain" ) and len(args) == 2:
+		elif action in ( "rf_gain", "if_gain", "set_freq" ) and len(args) == 2:
 			port, value = args
 			try:
-				self.devices[port].stdin.write(f"set_{action} {value}\n")
-				self.devices[port].stdin.flush()
-			finally:
+				cmd = f"set_{action} {value}\n" if action in ("rf_gain", "if_gain") else f"set_freq {value}\n"
+				self.devices[int(port)].stdin.write(cmd)
+				self.devices[int(port)].stdin.flush()
+			except Exception as e:
+				response = {"status": "error", "message": str(e)}
+			else:
 				response = {"status": "command_sent", "port": port, "action": action, "value": value}
 
-		elif action == "set_freq" and args:
-			response = self.src.set_center_freq(float(args[0]))
-
-		elif action == "start":
-			response = self.tb.start()
-
-		elif action == "stop":
-			response = self.tb.stop()
+		elif action in ("start", "stop") and args:
+			port = int(args[0])
+			try:
+				self.devices[port].stdin.write(f"{action}\n")
+				self.devices[port].stdin.flush()
+			except Exception as e:
+				response = {"status": "error", "message": str(e)}
+			else:
+				response = {"status": "command_sent", "port": port, "action": action}
 
 		if response is not None:
 			return json.dumps( response )
@@ -178,8 +182,8 @@ class GRH:
 
 			self.server.close()
 			logging.info("Server socket closed")
-		if os.path.exists(args.sock):
-			os.unlink(args.sock)
+		if os.path.exists(self.sock_path):
+			os.unlink(self.sock_path)
 
 # Set up command-line argument parsing
 def parse_args():
