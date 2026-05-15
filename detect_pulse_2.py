@@ -65,7 +65,7 @@ class Pulse_Detector:
 
     """
 
-    def __init__(self, output_type="test", verbose=True, filename="output.csv", port = 0, samp_rate=250000, min_snr_db=6, debounce_samples: int=10, pulse_len_ms: float=2.5, pulse_padding_s: float=2.5e-3, freq_min: float=None, freq_max: float=None):
+    def __init__(self, output_type="test", verbose=True, filename="output.csv", port = 0, samp_rate=250000, min_snr_db=6, debounce_samples: int=10, pulse_len_ms: float=2.5, pulse_padding_s: float=2.5e-3, freq_min: float=None, freq_max: float=None, high_perf: bool=True):
 
         self.filename = filename
         self.output_type = output_type
@@ -85,6 +85,7 @@ class Pulse_Detector:
 
         self.freq_min = freq_min
         self.freq_max = freq_max
+        self.high_perf = bool(high_perf)
 
         self.debounce = int(debounce_samples)
         self.time_init = time.time()
@@ -364,6 +365,24 @@ class Pulse_Detector:
 
             sv = signal_iq[edge_sample_index]
             edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
+
+            # Low-performance mode: skip FFT and tone subtraction entirely.
+            # Frequency offset is reported as 0; all other fields are still valid.
+            if not self.high_perf:
+                window_start = edge_sample_index
+                window_end = min(edge_sample_index + self.pulse_len_samples, signal_length)
+                window_len = window_end - window_start
+                pulses.append(
+                    f"{self.time_chunk_start + edge_time:.6f},0,"
+                    f"{plateau_db:.2f},{plateau_db + magnitude_delta_db:.2f},{snr_db:.2f},"
+                    f"{1e3 * window_len / self.samp_rate:.3f},{window_len},"
+                    f"2048,0,0,{edge_phase_rad:.6f}"
+                )
+                correlations[i] = 0.0
+                if i + 1 < len(correlations):
+                    correlations[i + 1] = 0.0
+                blocked_until = i + 3
+                continue
 
             tmp = time.time()
             result = self.compute_edge_fft(signal_iq, edge_time)
@@ -655,8 +674,10 @@ class Pulse_Detector:
             # overlapping pulses while staying clear of the ramp (where amplitude is 0→A).
             ramp_samp = max(1, self.edge_window_samples // 3)
             body_start = ramp_samp
-            # Cap body at 2*ramp_samp to keep clear of a potential overlapping pulse
-            body_end = min(body_start + 2 * ramp_samp, window_len - ramp_samp)
+            # Use at least 32 samples for stable phase regression; avoids poor
+            # cancellation at low sample rates where 2*ramp_samp can be < 10 samples.
+            min_body = max(2 * ramp_samp, 32)
+            body_end = min(body_start + min_body, window_len - ramp_samp)
             body_end = max(body_end, body_start + 2)
             body_len = body_end - body_start
             t_body = np.arange(body_len, dtype=np.float64)

@@ -80,14 +80,17 @@ def load_pulse_catalog(path):
     return pulses
 
 
-def detect_edges_matched_filter(iq, sr, _template):
+def detect_edges_matched_filter(iq, sr, template):
     """Detect rising edges using detect_pulse_2.Pulse_Detector.
 
-    Returns (rising_edges, correlations, mag_deltas) with the same shapes as
-    the old inline implementation so that all downstream plot code is unchanged.
+    Returns (rising_edges, correlations, mag_deltas).
     rising_edges items: (time_s, corr_score, plateau_db, magnitude_delta_db)
+    mag_deltas: per-sample (plateau - baseline) array aligned with correlations.
     """
     global pre_fft_results
+
+    # Capture pre-subtraction magnitude for mag_deltas computation
+    sig_mag_orig = np.abs(iq)
 
     det = dp2.Pulse_Detector(output_type="test", samp_rate=sr,
                              verbose=False, pulse_len_ms=2.5)
@@ -115,7 +118,19 @@ def detect_edges_matched_filter(iq, sr, _template):
     residual = np.concatenate([signal_after, iq[-pulse_samples:]]).astype(np.complex64)
     iq[:len(residual)] = residual
 
-    mag_deltas = None
+    # Per-sample plateau-baseline magnitude delta using O(1) prefix sums
+    tmpl_len = len(det.edge_template)
+    third = max(1, tmpl_len // 3)
+    n_corr = max(0, len(sig_mag_orig) - tmpl_len + 1)
+    if n_corr > 0:
+        pfx = np.zeros(len(sig_mag_orig) + 1)
+        np.cumsum(sig_mag_orig, out=pfx[1:])
+        baseline = (pfx[third:third + n_corr] - pfx[:n_corr]) / third
+        plateau  = (pfx[tmpl_len:tmpl_len + n_corr] - pfx[2 * third:2 * third + n_corr]) / third
+        mag_deltas = plateau - baseline
+    else:
+        mag_deltas = np.zeros(0)
+
     return rising_edges, correlations, mag_deltas
 
 
@@ -382,6 +397,103 @@ def summarize_pulse_collection(label, pulses):
     print(f"  Start time (ms): mean {time_mean:.3f}, std {time_std:.3f}")
     print(f"  Frequency (kHz): mean {freq_mean:.3f}, std {freq_std:.3f}")
     print(f"  Amplitude (dB): mean {amp_mean:.3f}, std {amp_std:.3f}")
+
+
+def plot_timing_error_analysis(rising_edges, reference_pulses, match_tol_s=1e-3):
+    """Overlay detected vs reference times and visualise timing error distribution."""
+    if not rising_edges or not reference_pulses:
+        print("Skipping timing error analysis: no data.")
+        return
+
+    ref_times_s = sorted(p[1] for p in reference_pulses)
+    det_times_s = sorted(edge[0] for edge in rising_edges)
+
+    def greedy_match(det_list, ref_list, tol):
+        used = set()
+        pairs = []
+        for dt in det_list:
+            best_j, best_err = None, tol
+            for j, rt in enumerate(ref_list):
+                if j in used:
+                    continue
+                err = abs(dt - rt)
+                if err < best_err:
+                    best_err = err
+                    best_j = j
+            if best_j is not None:
+                used.add(best_j)
+                pairs.append((dt, ref_list[best_j]))
+        return pairs
+
+    pairs = greedy_match(det_times_s, ref_times_s, match_tol_s)
+    if not pairs:
+        print("No matched detections for timing error analysis.")
+        return
+
+    errors_us = np.array([(dt - rt) * 1e6 for dt, rt in pairs])
+    ref_ms    = np.array([rt * 1000.0 for _, rt in pairs])
+
+    mean_us = float(np.mean(errors_us))
+    std_us  = float(np.std(errors_us))
+    n       = len(errors_us)
+
+    # Histogram + Gaussian fit
+    n_bins = max(10, n // 4)
+    counts, bin_edges = np.histogram(errors_us, bins=n_bins)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    bin_width   = float(bin_edges[1] - bin_edges[0])
+
+    x_fit = np.linspace(errors_us.min() - 2 * std_us, errors_us.max() + 2 * std_us, 400)
+    safe_std = max(std_us, 1e-6)
+    gauss = (n * bin_width / (safe_std * np.sqrt(2 * np.pi))
+             * np.exp(-0.5 * ((x_fit - mean_us) / safe_std) ** 2))
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=(
+            f'Timing Error Histogram  (n={n},  mean={mean_us:.1f} us,  1s={std_us:.1f} us)',
+            'Timing Error vs Reference Pulse Time',
+        ),
+        vertical_spacing=0.12,
+    )
+
+    fig.add_trace(go.Bar(x=bin_centers, y=counts, name='count',
+                         marker_color='steelblue', opacity=0.75), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x_fit, y=gauss, name='Gaussian fit',
+                             line=dict(color='red', width=2)), row=1, col=1)
+
+    y_max = float(counts.max()) * 1.15 if len(counts) else 1.0
+    for xv, color, label in [
+        (mean_us,           'darkorange', f'mean {mean_us:.1f} us'),
+        (mean_us - std_us,  'green',      f'-1s {mean_us - std_us:.1f} us'),
+        (mean_us + std_us,  'green',      f'+1s {mean_us + std_us:.1f} us'),
+    ]:
+        fig.add_trace(go.Scatter(x=[xv, xv], y=[0, y_max], mode='lines',
+                                 line=dict(color=color, dash='dash', width=1.5),
+                                 name=label, showlegend=True), row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=ref_ms, y=errors_us, mode='markers',
+                             marker=dict(color='steelblue', size=6),
+                             name='error per detection', showlegend=True), row=2, col=1)
+    fig.add_trace(go.Scatter(x=[ref_ms.min(), ref_ms.max()],
+                             y=[mean_us, mean_us], mode='lines',
+                             line=dict(color='darkorange', dash='dash', width=1.5),
+                             name=f'mean {mean_us:.1f} us', showlegend=False), row=2, col=1)
+    fig.add_hrect(y0=mean_us - std_us, y1=mean_us + std_us,
+                  fillcolor='green', opacity=0.1,
+                  annotation_text=f'±1s = {std_us:.1f} us',
+                  annotation_position='top right', row=2, col=1)
+
+    fig.update_layout(title_text='Detection Timing Error Analysis',
+                      template='plotly_white', height=600)
+    fig.update_xaxes(title_text='Timing error (us)', row=1, col=1, showgrid=True)
+    fig.update_xaxes(title_text='Reference pulse time (ms)', row=2, col=1, showgrid=True)
+    fig.update_yaxes(title_text='Count', row=1, col=1, showgrid=True)
+    fig.update_yaxes(title_text='Error (us)', row=2, col=1, showgrid=True)
+
+    fig.write_html('timing_error_analysis.html')
+    print(f"\nTiming error: n={n}, mean={mean_us:.1f} us, 1s={std_us:.1f} us")
+    print("Saved 'timing_error_analysis.html'")
 
 
 def compute_edge_fft(iq_data, sample_rate, edge_time_s, edge_num):
@@ -892,10 +1004,12 @@ if __name__ == "__main__":
 
     print("Pre FFT results:", pre_fft_results)
 
-
     print(f"\nEdge detection results:")
     print(f"Rising edges detected: {len(rising_edges)}")
-    
+
+    # Timing error analysis vs ground truth
+    plot_timing_error_analysis(rising_edges, reference_pulses)
+
     # Time domain analysis on decimated data with edge overlays
     print("\nPlotting time domain...")
     plot_time_domain(

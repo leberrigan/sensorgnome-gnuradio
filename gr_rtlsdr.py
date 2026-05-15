@@ -91,7 +91,8 @@ class rtlsdr_detect_pulse(gr.top_block):
             samp_rate=samp_rate / decimation_factor,
             min_snr_db=6,
             debounce_samples=10,
-            pulse_len_ms=2.5
+            pulse_len_ms=2.5,
+            high_perf=not self.args.low_perf,
         )
 
         ##################################################
@@ -173,6 +174,7 @@ class rtlsdr_detect_pulse(gr.top_block):
         parser.add_argument('-v', '--verbose', help='Print messages', default = False, action="store_true")
         parser.add_argument('-a', '--additional_args', help='Arguments to pass on to osmosdr on init', default = "sensitivity=21", type = str)
         parser.add_argument('-g', '--gain', help='Gain as JSON, e.g. \'{"rf":15,"if":0}\'', default = '{"rf":15,"if":0}', type = str)
+        parser.add_argument('--low_perf', help='Disable FFT/subtraction for lower CPU use (enables 10+ simultaneous instances)', default=False, action='store_true')
         return parser.parse_args()
 
 
