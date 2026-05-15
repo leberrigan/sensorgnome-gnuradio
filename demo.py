@@ -1,9 +1,10 @@
 """
 demo.py — demonstrate detect_pulse_2 findings
   1. Accuracy benchmark (94/100, 1 FP)
-  2. Speed measurement and RPi 3B capacity estimate
+  2. Speed measurement and RPi 3B capacity estimate (high_perf mode)
   3. Sample detection output
   4. Comparison with old O(N*L) approach on same data
+  5. High-perf vs low-perf mode comparison
 
 Run from the repo root:
     python demo.py
@@ -37,11 +38,18 @@ try:
 except FileNotFoundError:
     sys.exit("ERROR: test_signal.iq not found — run: python \"Jeff scripts/synthesize_test_signal.py\"")
 
-def run_detector(detector_module, label, samp_rate=SAMP_RATE, chunk_size=CHUNK_SIZE):
-    """Run a Pulse_Detector from the given module; return (matched, fp, elapsed)."""
-    det = detector_module.Pulse_Detector(
-        output_type="test", samp_rate=samp_rate, verbose=False, pulse_len_ms=2.5
-    )
+def run_detector(detector_module, label, samp_rate=SAMP_RATE, chunk_size=CHUNK_SIZE, high_perf=True):
+    """Run a Pulse_Detector from the given module; return (matched, fp, elapsed, detected)."""
+    try:
+        det = detector_module.Pulse_Detector(
+            output_type="test", samp_rate=samp_rate, verbose=False, pulse_len_ms=2.5,
+            high_perf=high_perf,
+        )
+    except TypeError:
+        # Older detectors that don't support the high_perf parameter
+        det = detector_module.Pulse_Detector(
+            output_type="test", samp_rate=samp_rate, verbose=False, pulse_len_ms=2.5,
+        )
     n_chunks = len(iq_data) // chunk_size
     t0 = time.perf_counter()
     raw = []
@@ -91,7 +99,7 @@ print(f"  Throughput    : {throughput/1e3:.0f}k samples/s")
 # ── Section 2: RPi 3B capacity estimate ───────────────────────────────────────
 print()
 print("=" * 60)
-print("2. RPi 3B v1.2 CAPACITY ESTIMATE")
+print("2. RPi 3B v1.2 CAPACITY ESTIMATE  (high_perf mode)")
 print("=" * 60)
 
 # Flow graph decimates to 48 kHz target rate. Same chunk size → 4× longer wall
@@ -171,14 +179,62 @@ try:
     speedup = elapsed1 / elapsed2
     print(f"  Old (O(N*L) loop)  : {matched1}/{NUM_PULSES} matched, {fp1} FP,  {elapsed1:.3f}s  ({elapsed1/rec_s:.2f}x realtime)")
     print(f"  New (O(N+NlogN))   : {matched2}/{NUM_PULSES} matched, {fp2} FP,  {elapsed2:.3f}s  ({elapsed2/rec_s:.2f}x realtime)")
-    print(f"  Speedup            : {speedup:.1f}×")
+    print(f"  Speedup            : {speedup:.1f}x")
 except Exception as exc:
     print(f"  (old detector unavailable: {exc})")
+
+# ── Section 5: High-perf vs low-perf comparison ───────────────────────────────
+print()
+print("=" * 60)
+print("5. HIGH-PERF vs LOW-PERF MODE COMPARISON  (192 kHz, 2048-sample chunks)")
+print("=" * 60)
+
+matched_lp, fp_lp, elapsed_lp, det_lp_times = run_detector(dp2, "detect_pulse_2 (low_perf)", high_perf=False)
+
+ratio_lp   = elapsed_lp / rec_s
+speedup    = elapsed_lp / elapsed2  # >1 means low_perf is slower (shouldn't happen)
+# low_perf should be faster; guard against tiny rounding
+cpu_factor = elapsed2 / max(elapsed_lp, 1e-9)  # how many times faster low_perf is
+
+# RPi 3B estimate for low_perf
+# Low-perf skips the FFT (the main NumPy cost beyond the correlation), so the
+# dominant cost shifts further toward the CPython correlation loop.
+# Conservatively assume py_fraction rises to 0.92 (FFT was ~8% of total in high_perf).
+py_fraction_lp = 0.92
+np_fraction_lp = 1.0 - py_fraction_lp
+time_per_sec_rpi_lp = (py_fraction_lp * py_slowdown +
+                        np_fraction_lp * np_slowdown) * elapsed_lp
+ratio_rpi_48_lp = (time_per_sec_rpi_lp / rec_s) * (DECIMATE_RATE / SAMP_RATE)
+instances_lp    = usable_cores / ratio_rpi_48_lp
+
+ratio48_hp = ratio * DECIMATE_RATE / SAMP_RATE
+ratio48_lp = ratio_lp * DECIMATE_RATE / SAMP_RATE
+speed_note = f"{cpu_factor:.1f}x faster" if cpu_factor >= 1 else f"{1/cpu_factor:.1f}x slower"
+
+print(f"  {'':25}  {'high_perf':>10}  {'low_perf':>10}  {'delta':>10}")
+print(f"  {'-'*60}")
+print(f"  {'Matched':25}  {matched2:>10}  {matched_lp:>10}  {matched_lp - matched2:>+10}")
+print(f"  {'False positives':25}  {fp2:>10}  {fp_lp:>10}  {fp_lp - fp2:>+10}")
+print(f"  {'Elapsed (s)':25}  {elapsed2:>10.3f}  {elapsed_lp:>10.3f}  {elapsed_lp - elapsed2:>+10.3f}")
+print(f"  {'Realtime (192 kHz)':25}  {ratio:>9.4f}x  {ratio_lp:>9.4f}x  {speed_note:>10}")
+print(f"  {'Realtime (48 kHz)':25}  {ratio48_hp:>9.4f}x  {ratio48_lp:>9.4f}x")
+print(f"  {'RPi 3B instances (48 kHz)':25}  {instances_cpu:>10.1f}  {instances_lp:>10.1f}  "
+      f"{instances_lp - instances_cpu:>+10.1f}")
+print()
+print(f"  Speed ratio: low_perf is {cpu_factor:.1f}x faster than high_perf on this machine")
+print(f"  Accuracy:    {matched_lp}/{NUM_PULSES} matched in low_perf "
+      f"({'same' if matched_lp == matched2 else f'{matched_lp - matched2:+d}'} vs high_perf)")
+print(f"  Trade-off:   low_perf drops frequency offset (always 0); all other")
+print(f"               fields (timestamp, SNR, duration) remain fully populated.")
+print(f"  RPi headroom: {instances_lp:.0f} theoretical instances in low_perf "
+      f"vs {instances_cpu:.0f} in high_perf")
 
 print()
 print("=" * 60)
 print("HTML plots produced by airspy_time_domain_2.py:")
-print("  edge_templates.html      — matched filter template shape")
-print("  time_domain_analysis.html — I/Q, magnitude, correlations,")
-print("                              detected edges vs ground truth")
+print("  edge_templates.html        - matched filter template shape")
+print("  time_domain_analysis.html  - I/Q, magnitude (original vs after")
+print("                               subtraction), correlations, detected")
+print("                               edges vs ground truth")
+print("  timing_error_analysis.html - timing error histogram + Gaussian fit")
 print("=" * 60)
