@@ -124,14 +124,14 @@ class airspy_detect_pulse(gr.top_block):
     def set_freq_offset(self, freq_offset):
         self.freq_offset = freq_offset
         self.freq_xlating_fir_filter.set_center_freq(self.freq_offset)
-        self.soapy_airspyhf_source.set_frequency((self.freq - self.freq_offset), 0)
+        self.soapy_airspyhf_source.set_frequency(0, (self.freq - self.freq_offset))
 
     def get_freq(self):
         return self.freq
 
     def set_freq(self, freq):
-        self.freq = freq
-        self.soapy_airspyhf_source.set_frequency((self.freq - self.freq_offset), 0)
+        self.freq = float(freq)
+        self.soapy_airspyhf_source.set_frequency(0, (self.freq - self.freq_offset))
         return "success"
 
     def get_fft_size(self):

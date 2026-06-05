@@ -1,0 +1,22 @@
+Package: sensorgnome-gnuradio
+Version: 0
+Architecture: armhf
+Section: misc
+Priority: standard
+Essential: no
+Depends: python3,
+ gnuradio,
+ gr-osmosdr,
+ python3-numpy,
+ python3-scipy,
+ python3-sklearn,
+ librtlsdr0,
+ libairspy0,
+ libairspyhf0
+Recommends: fcd
+Homepage: https://github.com/leberrigan/sensorgnome-gnuradio
+Maintainer: Lucas Berrigan (lberrigan@birdscanada.org)
+Description: GNU Radio pulse detection for SensorGnome
+ Python scripts for GNU Radio-based RF acquisition and Motus pulse detection,
+ replacing vamp-alsa-host for RTL-SDR, Airspy, Airspy HF+, and FUNcube
+ Dongle Pro+ receivers.

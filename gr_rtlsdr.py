@@ -193,9 +193,10 @@ def main(top_block_cls=rtlsdr_detect_pulse, options=None):
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
 
+    threading.Thread(target=tb.read_stdin, daemon=True).start()
+
     try:
         while True:
-            tb.read_stdin()
             time.sleep(1)
     except KeyboardInterrupt:
         sig_handler()

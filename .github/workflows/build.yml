@@ -1,0 +1,14 @@
+name: Build package
+
+on: [push]
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  build-deb:
+    uses: leberrigan/sensorgnome-build/.github/workflows/generate-deb.yml@pimod
+    secrets:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}

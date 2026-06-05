@@ -1,8 +1,15 @@
 __pycache__
 *_detect_pulse*.py
+build-temp
+packages
 raw_iq*.bin
 jeff*
 output.csv
 _debug*
 _check_*
 _benchmark*
+.claude
+claude*
+detected_pulses.csv
+test_signal.iq
+*.html

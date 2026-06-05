@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+# Ensure flow-graph host script is executable
+chmod +x /usr/bin/gnu-radio-host.py
+chmod +x /usr/bin/gr_airspy.py
+chmod +x /usr/bin/gr_airspyhf.py
+chmod +x /usr/bin/gr_rtlsdr.py
+chmod +x /usr/bin/gr_funcubepp.py
+
+exit 0

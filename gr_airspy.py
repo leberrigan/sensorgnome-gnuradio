@@ -17,6 +17,7 @@ from gnuradio import gr
 from gnuradio.fft import window
 import sys
 import signal
+import json
 
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
@@ -50,6 +51,10 @@ class airspy_detect_pulse(gr.top_block):
         self.additional_args = additional_args = self.args.additional_args
         self.pulse_len_ms = 2.5
         self.max_pulse_samples = int((self.pulse_len_ms / 1000) * (self.samp_rate / self.decimation_factor))
+        self.gain = json.loads(self.args.gain)
+        self.gain_rf = float(self.gain.get('rf', 15))
+        self.gain_bb = float(self.gain.get('bb', 20))
+        self.gain_if = float(self.gain.get('if', 0))
 
         ##################################################
         # Blocks
@@ -65,9 +70,9 @@ class airspy_detect_pulse(gr.top_block):
         self.osmosdr_source.set_dc_offset_mode(0, 0)
         self.osmosdr_source.set_iq_balance_mode(0, 0)
         self.osmosdr_source.set_gain_mode(False, 0)
-        self.osmosdr_source.set_gain(15, 0)
-        self.osmosdr_source.set_if_gain(0, 0)
-        self.osmosdr_source.set_bb_gain(20, 0)
+        self.osmosdr_source.set_gain(self.gain_rf, 0)
+        self.osmosdr_source.set_if_gain(self.gain_if, 0)
+        self.osmosdr_source.set_bb_gain(self.gain_bb, 0)
         self.osmosdr_source.set_antenna('', 0)
         self.osmosdr_source.set_bandwidth(0, 0)
         self.freq_xlating_fir_filter = filter.freq_xlating_fir_filter_ccc(
@@ -143,7 +148,26 @@ class airspy_detect_pulse(gr.top_block):
         self.decimation_factor = decimation_factor
         self.detect_pulses.samp_rate = self.samp_rate / self.decimation_factor
 
+    def set_freq(self, freq):
+        self.freq = float(freq)
+        self.osmosdr_source.set_center_freq(self.freq - self.freq_offset, 0)
+        return "success"
 
+    def set_rf_gain(self, gain):
+        self.gain_rf = float(gain)
+        self.osmosdr_source.set_gain(self.gain_rf, 0)
+        return "success"
+
+    def read_stdin(self):
+        for line in sys.stdin:
+            parts = line.strip().split()
+            if not parts: continue
+            action = parts[0]
+            args = parts[1:]
+            if action in ("set_freq", "set_rf_gain") and args:
+                response = getattr(self, action)(*args)
+                if response:
+                    print(response, flush=True)
 
     # Set up command-line argument parsing
     def get_args(self):
@@ -155,7 +179,7 @@ class airspy_detect_pulse(gr.top_block):
         parser.add_argument('-f', '--freq', help='Frequency', default = 166376000, type = float)
         parser.add_argument('-v', '--verbose', help='Print messages', default = False, action="store_true")
         parser.add_argument('-a', '--additional_args', help='Arguments to pass on to osmosdr on init', default = "sensitivity=21", type = str)
-        parser.add_argument('-g', '--gain', help='Gain', default = "{rf:49.6,if:20}", type = str)
+        parser.add_argument('-g', '--gain', help='Gain as JSON, e.g. \'{"rf":15,"bb":20,"if":0}\'', default = '{}', type = str)
         return parser.parse_args()
 
 
@@ -173,6 +197,8 @@ def main(top_block_cls=airspy_detect_pulse, options=None):
 
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
+
+    threading.Thread(target=tb.read_stdin, daemon=True).start()
 
     try:
         while True:

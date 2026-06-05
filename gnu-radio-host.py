@@ -31,13 +31,30 @@ class GRH:
 
 		if action == "open" and len(args) >= 6:
 			dev_type, port, device, samp_rate, target_rate, freq, gain, *additional_args = args
-			if not additional_args:
-				additional_args = ""
-			response = self.spawn_device(dev_type, int(port), device, int(samp_rate), int(target_rate), float(freq), gain, additional_args, conn)
+			response = self.spawn_device(dev_type, int(port), device, int(samp_rate), int(target_rate), float(freq), gain, " ".join(additional_args), conn)
+
+		elif action == "list":
+			result = {}
+			for p, proc in self.devices.items():
+				alive = proc.poll() is None
+				result[f"p{p}"] = {"alive": alive, "pid": proc.pid if alive else None}
+			response = result
 
 		elif action == "close" and args:
 			port = int(args[0])
 			response = self.kill_device(port)
+
+		elif action == "frequency" and len(args) == 2:
+			# frequency command from sensor.js hw_setParam: value is in MHz
+			port, mhz_value = args
+			hz_value = int(float(mhz_value) * 1e6)
+			try:
+				self.devices[int(port)].stdin.write(f"set_freq {hz_value}\n")
+				self.devices[int(port)].stdin.flush()
+			except Exception as e:
+				response = {"status": "error", "message": str(e)}
+			else:
+				response = {"status": "command_sent", "port": port, "action": "set_freq", "value": hz_value}
 
 		elif action in ( "rf_gain", "if_gain", "set_freq" ) and len(args) == 2:
 			port, value = args
@@ -65,11 +82,17 @@ class GRH:
 		else:
 			return json.dumps( {"status": "error", "message": f"Unknown command {action}", "args": args} )
 
+	# Maps device types whose script filename differs from the type name
+	SCRIPT_NAMES = {
+		'funcubeProPlus': 'funcubepp',
+	}
+
 	def spawn_device(self, dev_type, port, device, samp_rate, target_rate, freq, gain, additional_args, conn):
 		if port in self.devices:
 			self.kill_device(port)
 
-		script = f"/usr/bin/gr_{dev_type}.py"
+		script_name = self.SCRIPT_NAMES.get(dev_type, dev_type)
+		script = f"/usr/bin/gr_{script_name}.py"
 		cmd = [
 			"python3", script,
 			"--port", str(port),
@@ -78,7 +101,7 @@ class GRH:
 			"--samp_rate", str(samp_rate),
 			"--target_rate", str(target_rate),
 			"--gain", str(gain),
-			"--additional_args", str(additional_args)
+			"--additional_args", additional_args
 		]
 		try:
 			proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
