@@ -5,7 +5,12 @@ Section: misc
 Priority: standard
 Essential: no
 Depends: python3,
- gnuradio,
+ libgnuradio-runtime3.10.5,
+ libgnuradio-filter3.10.5,
+ libgnuradio-blocks3.10.5,
+ libgnuradio-audio3.10.5,
+ libgnuradio-soapy3.10.5,
+ libgnuradio-fft3.10.5,
  gr-osmosdr,
  python3-numpy,
  python3-scipy,
