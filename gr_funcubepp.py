@@ -96,7 +96,6 @@ class funcubepp_detect_pulse(gr.top_block):
             min_snr_db=6,
             debounce_samples=10,
             pulse_len_ms=2.5,
-            high_perf=not self.args.low_perf,
         )
 
         ##################################################
@@ -138,9 +137,12 @@ class funcubepp_detect_pulse(gr.top_block):
             action = parts[0]
             args = parts[1:]
             if action in ("set_freq", "set_lna_gain") and args:
-                response = getattr(self, action)(*args)
-                if response:
-                    print(response, flush=True)
+                try:
+                    response = getattr(self, action)(*args)
+                    if response:
+                        print(response, flush=True)
+                except Exception as e:
+                    print(f"error: {action} {args}: {e}", flush=True)
 
     def get_samp_rate(self):
         return self.samp_rate

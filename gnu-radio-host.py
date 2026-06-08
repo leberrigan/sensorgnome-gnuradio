@@ -56,11 +56,10 @@ class GRH:
 			else:
 				response = {"status": "command_sent", "port": port, "action": "set_freq", "value": hz_value}
 
-		elif action in ( "rf_gain", "if_gain", "set_freq" ) and len(args) == 2:
+		elif action in ( "rf_gain", "if_gain", "lna_gain", "sensitivity_gain", "agc", "bias_tee" ) and len(args) == 2:
 			port, value = args
 			try:
-				cmd = f"set_{action} {value}\n" if action in ("rf_gain", "if_gain") else f"set_freq {value}\n"
-				self.devices[int(port)].stdin.write(cmd)
+				self.devices[int(port)].stdin.write(f"set_{action} {value}\n")
 				self.devices[int(port)].stdin.flush()
 			except Exception as e:
 				response = {"status": "error", "message": str(e)}
@@ -196,7 +195,21 @@ class GRH:
 				if (self.verbose):
 					logging.info(response)
 	
+	def kill_all_devices(self):
+		for port in list(self.devices.keys()):
+			proc = self.devices.pop(port, None)
+			if proc:
+				try:
+					proc.terminate()
+					proc.wait(timeout=3)
+				except Exception:
+					try:
+						proc.kill()
+					except Exception:
+						pass
+
 	def kill_sock(self):
+		self.kill_all_devices()
 		if self.server and self.server is not None:
 			try:
 				self.server.shutdown(socket.SHUT_RDWR)
@@ -219,6 +232,11 @@ def parse_args():
 
 
 if __name__ == "__main__":
+	import signal
+	def _sigterm_handler(signum, frame):
+		raise SystemExit(0)
+	signal.signal(signal.SIGTERM, _sigterm_handler)
+
 	exit_status = 0
 	try:
 		args = parse_args()

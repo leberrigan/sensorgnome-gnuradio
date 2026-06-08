@@ -73,7 +73,7 @@ class Pulse_Detector:
         self.port = int(port)
 
         self.samp_rate = int(samp_rate)
-        self.min_snr_db = 6#int(min_snr_db)
+        self.min_snr_db = int(min_snr_db)
         self.magnitude_threshold_db = -40
         self.pulse_len_ms = float(pulse_len_ms)
         self.pulse_len_samples = int(pulse_len_ms * 1e-3 * samp_rate) # number of samples in a pulse
@@ -197,7 +197,13 @@ class Pulse_Detector:
         self.times["detect_edges"] += time.time() - tmp
 
         if self.verbose:
-            print(f"Found {len(rising_edges)} pulses in {len(correlations)} correlations!")
+            max_corr = float(np.max(correlations)) if len(correlations) > 0 else 0.0
+            mag = np.abs(raw_iq)
+            print(f"Found {len(rising_edges)} pulses in {len(correlations)} correlations! "
+                  f"(max corr: {max_corr:.3f}, mag mean={np.mean(mag):.5f} max={np.max(mag):.5f})")
+        if self.output_type == "stream":
+            for pulse in rising_edges:
+                print(f"p{self.port},{pulse}", flush=True)
         if (self.output_type == "test"):
             output += rising_edges
 
@@ -352,8 +358,10 @@ class Pulse_Detector:
 
             magnitude_delta = plateau - baseline
             magnitude_delta_db = 10.0 * np.log10(max(magnitude_delta, eps))
-            snr_db = 10.0 * np.log10(max(plateau / max(baseline, eps), eps))
+            # 20*log10 of amplitude ratio = standard power-equivalent SNR in dB
+            snr_db = 20.0 * np.log10(max(plateau / max(baseline, eps), eps))
             plateau_db = 10.0 * np.log10(max(plateau, eps))
+            baseline_db = 10.0 * np.log10(max(baseline, eps))
 
             self.pre_fft_results += 1
             if magnitude_delta < self.edge_magnitude_threshold or snr_db < self.min_snr_db:
@@ -374,7 +382,7 @@ class Pulse_Detector:
                 window_len = window_end - window_start
                 pulses.append(
                     f"{self.time_chunk_start + edge_time:.6f},0,"
-                    f"{plateau_db:.2f},{plateau_db + magnitude_delta_db:.2f},{snr_db:.2f},"
+                    f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
                     f"{1e3 * window_len / self.samp_rate:.3f},{window_len},"
                     f"2048,0,0,{edge_phase_rad:.6f}"
                 )
@@ -409,8 +417,8 @@ class Pulse_Detector:
                 pulse_offset_hz = 0
 
             pulses.append(
-                f"{self.time_chunk_start + edge_time:.6f},{pulse_offset_hz},"
-                f"{plateau_db:.2f},{plateau_db + magnitude_delta_db:.2f},{snr_db:.2f},"
+                f"{self.time_chunk_start + edge_time:.6f},{pulse_offset_hz / 1e3:.3f},"
+                f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
                 f"{1e3 * len(window_signal_before) / self.samp_rate:.3f},{len(window_signal_before)},"
                 f"2048,0,0,{result['edge_phase_rad']:.6f}"
             )
@@ -631,7 +639,7 @@ class Pulse_Detector:
 
             self.pulses.append(result)
 
-            pulse = f"{self.time_chunk_start + edge_event["edge_time"]:.6f},{pulse_offset_hz},{result["peak_strength_db"]:.2f},{result["peak_strength_db"] + result["magnitude_delta_db"]:.2f},{result["magnitude_delta_db"]:.2f},{1e3*len(window_iq)/self.samp_rate},{len(window_iq)},{2048},{0},{0}"
+            pulse = f"{self.time_chunk_start + edge_event['edge_time']:.6f},{pulse_offset_hz},{result['peak_strength_db']:.2f},{result['peak_strength_db'] + result['magnitude_delta_db']:.2f},{result['magnitude_delta_db']:.2f},{1e3*len(window_iq)/self.samp_rate},{len(window_iq)},{2048},{0},{0}"
 
             return pulse, signal_iq
         

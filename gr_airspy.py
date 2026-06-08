@@ -10,7 +10,6 @@
 # GNU Radio version: 3.10.12.0
 
 
-from gnuradio import blocks
 from gnuradio import filter
 from gnuradio.filter import firdes
 from gnuradio import gr
@@ -90,24 +89,18 @@ class airspy_detect_pulse(gr.top_block):
         self.detect_pulses = detect_pulses.blk(
             output_type="stream",
             verbose=self.verbose,
-            port=port, 
-            samp_rate=samp_rate / decimation_factor, 
-            min_snr_db=6, 
-            debounce_samples=10, 
+            port=port,
+            samp_rate=samp_rate / decimation_factor,
+            min_snr_db=6,
+            debounce_samples=10,
             pulse_len_ms=2.5
         )
-        self.blocks_moving_average = blocks.moving_average_ff( 3, 1/3, 4000, 1)
-        self.blocks_complex_to_mag_squared = blocks.complex_to_mag_squared(1)
-
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.blocks_complex_to_mag_squared, 0), (self.blocks_moving_average, 0))
-        self.connect((self.blocks_moving_average, 0), (self.detect_pulses, 0))
-        self.connect((self.freq_xlating_fir_filter, 0), (self.blocks_complex_to_mag_squared, 0))
-        self.connect((self.freq_xlating_fir_filter, 0), (self.detect_pulses, 1))
         self.connect((self.osmosdr_source, 0), (self.freq_xlating_fir_filter, 0))
+        self.connect((self.freq_xlating_fir_filter, 0), (self.detect_pulses, 0))
 
 
     def get_samp_rate(self):
@@ -158,16 +151,31 @@ class airspy_detect_pulse(gr.top_block):
         self.osmosdr_source.set_gain(self.gain_rf, 0)
         return "success"
 
+    def set_sensitivity_gain(self, gain):
+        self.osmosdr_source.set_gain(float(gain), "SENSITIVITY", 0)
+        return "success"
+
+    def set_agc(self, enabled):
+        self.osmosdr_source.set_gain_mode(bool(int(enabled)), 0)
+        return "success"
+
+    def set_bias_tee(self, enabled):
+        # osmosdr has no runtime bias-tee API; value is set via device args at startup
+        return "success"
+
     def read_stdin(self):
         for line in sys.stdin:
             parts = line.strip().split()
             if not parts: continue
             action = parts[0]
             args = parts[1:]
-            if action in ("set_freq", "set_rf_gain") and args:
-                response = getattr(self, action)(*args)
-                if response:
-                    print(response, flush=True)
+            if action in ("set_freq", "set_rf_gain", "set_sensitivity_gain", "set_agc", "set_bias_tee") and args:
+                try:
+                    response = getattr(self, action)(*args)
+                    if response:
+                        print(response, flush=True)
+                except Exception as e:
+                    print(f"error: {action} {args}: {e}", flush=True)
 
     # Set up command-line argument parsing
     def get_args(self):

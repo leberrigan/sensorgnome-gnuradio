@@ -154,7 +154,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1200, 672.0]
+    coordinate: [1144, 672.0]
     rotation: 0
     state: enabled
 - name: blocks_file_sink_1
@@ -172,7 +172,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1184, 892.0]
+    coordinate: [1256, 876.0]
     rotation: 0
     state: enabled
 - name: blocks_moving_average_xx_0
@@ -192,7 +192,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1512, 624.0]
+    coordinate: [1456, 624.0]
     rotation: 0
     state: enabled
 - name: epy_block_0
