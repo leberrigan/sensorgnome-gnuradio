@@ -10,7 +10,8 @@ mkdir -p "$DESTDIR"
 # soapysdr-module-airspyhf is not in Debian Bookworm apt repos so we build from
 # source here and bundle the .so directly in the package.
 SOAPY_OUT="$(mktemp -d)"
-docker run --privileged --rm tonistiigi/binfmt --install arm
+# ARM binfmt/QEMU emulation is registered by the CI workflow (docker/setup-qemu-action).
+# For local builds, run: docker run --privileged --rm tonistiigi/binfmt --install arm
 docker run --rm \
     --platform linux/arm/v7 \
     -v "${SOAPY_OUT}:/output" \
