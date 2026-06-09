@@ -12,6 +12,7 @@ mkdir -p "$DESTDIR"
 SOAPY_OUT="$(mktemp -d)"
 docker run --privileged --rm tonistiigi/binfmt --install arm
 docker run --rm \
+    --platform linux/arm/v7 \
     -v "${SOAPY_OUT}:/output" \
     arm32v7/debian:bookworm \
     bash -exc "
