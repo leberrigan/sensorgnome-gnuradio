@@ -26,6 +26,7 @@ docker run --rm \
             -DCMAKE_INSTALL_PREFIX=/usr
         make -C /tmp/sa/build -j2
         DESTDIR=/output make -C /tmp/sa/build install
+        chown -R $(id -u):$(id -g) /output
     "
 # Merge the installed files (just the .so tree) into the package staging dir
 cp -a "${SOAPY_OUT}/." "${DESTDIR}/"
