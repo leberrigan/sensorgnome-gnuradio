@@ -38,7 +38,7 @@ docker run --rm --platform linux/arm/v7 \
     bash -c '
         set -e
         apt-get update -q
-        apt-get install -y -q --no-install-recommends build-essential ca-certificates cmake git libusb-1.0-0-dev libsoapysdr-dev libairspyhf-dev
+        apt-get install -y -q --no-install-recommends build-essential ca-certificates cmake git pkg-config libusb-1.0-0-dev libsoapysdr-dev libairspyhf-dev
         git clone --depth=1 --branch 1.6.8 https://github.com/airspy/airspyhf.git /tmp/airspyhf
         cmake -S /tmp/airspyhf -B /tmp/airspyhf/build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
         cmake --build /tmp/airspyhf/build -j2
