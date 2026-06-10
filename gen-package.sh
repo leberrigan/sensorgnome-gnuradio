@@ -46,7 +46,7 @@ docker run --rm --platform linux/arm/v7 \
         git clone --depth=1 https://github.com/pothosware/SoapyAirspyHF.git /tmp/soapy
         cmake -S /tmp/soapy -B /tmp/soapy/build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
         cmake --build /tmp/soapy/build -j2
-        cp /tmp/soapy/build/SoapyAirspyHF.so /out/
+        cp /tmp/soapy/build/libairspyhfSupport.so /out/
     '
 
 # ── DEBIAN control files ──────────────────────────────────────────────────────
