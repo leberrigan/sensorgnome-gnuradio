@@ -17,7 +17,6 @@ Depends: python3,
  python3-sklearn,
  librtlsdr0,
  libairspy0,
- libairspyhf1,
  fcd
 Homepage: https://github.com/leberrigan/sensorgnome-gnuradio
 Maintainer: Lucas Berrigan (lberrigan@birdscanada.org)

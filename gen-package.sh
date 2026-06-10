@@ -27,6 +27,29 @@ install -m 644 detect_pulse_2.py       "$PYLIB/"
 install -m 644 detect_pulse_overlap.py "$PYLIB/"
 install -m 644 detect_pulse.py         "$PYLIB/"
 
+# ── SoapyAirspyHF SoapySDR plugin ────────────────────────────────────────────
+# Built for armhf in Docker with QEMU — avoids the apt dependency conflicts that
+# prevent cmake from installing in the pimod/nspawn environment.
+SOMODDIR="$DESTDIR/usr/lib/arm-linux-gnueabihf/SoapySDR/modules0.8"
+install -d "$SOMODDIR"
+docker run --rm --platform linux/arm/v7 \
+    -v "$(realpath "$SOMODDIR"):/out" \
+    debian:bookworm \
+    bash -c '
+        set -e
+        apt-get update -q
+        apt-get install -y -q --no-install-recommends cmake git libusb-1.0-0-dev libsoapysdr-dev libairspyhf-dev
+        git clone --depth=1 --branch 1.6.8 https://github.com/airspy/airspyhf.git /tmp/airspyhf
+        cmake -S /tmp/airspyhf -B /tmp/airspyhf/build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+        cmake --build /tmp/airspyhf/build -j2
+        cmake --install /tmp/airspyhf/build
+        git clone --depth=1 https://github.com/pothosware/SoapyAirspyHF.git /tmp/soapy
+        cmake -S /tmp/soapy -B /tmp/soapy/build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
+        cmake --build /tmp/soapy/build -j2
+        cmake --install /tmp/soapy/build
+        find /usr/lib -name SoapyAirspyHF.so -exec cp {} /out/ \;
+    '
+
 # ── DEBIAN control files ──────────────────────────────────────────────────────
 cp -r DEBIAN "$DESTDIR"
 chmod 0755 "$DESTDIR"/DEBIAN/post* 2>/dev/null || true
