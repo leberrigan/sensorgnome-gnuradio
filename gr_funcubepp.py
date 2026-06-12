@@ -141,9 +141,9 @@ class funcubepp_detect_pulse(gr.top_block):
                 try:
                     response = getattr(self, action)(*args)
                     if response:
-                        print(response, flush=True)
+                        print(response, file=sys.stderr, flush=True)
                 except Exception as e:
-                    print(f"error: {action} {args}: {e}", flush=True)
+                    print(f"error: {action} {args}: {e}", file=sys.stderr, flush=True)
 
     def get_samp_rate(self):
         return self.samp_rate

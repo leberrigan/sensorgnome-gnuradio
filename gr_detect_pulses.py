@@ -15,7 +15,7 @@ from gnuradio import gr
 class blk(gr.sync_block):
 
     def __init__(self, output_type="file", verbose=True, filename="output.csv", port=0, samp_rate=250000, min_snr_db=6, debounce_samples: int=10, pulse_len_ms: float=2.5, high_perf: bool=True):
-        gr.sync_block.__init__(self,
+        gr.sync_block.__init__(self,    
             name="Pulse detector",
             in_sig=[np.complex64],
             out_sig=[])

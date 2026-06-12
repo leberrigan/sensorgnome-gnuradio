@@ -144,15 +144,15 @@ class GRH:
 		return {"status":"terminated", "port": port}
 
 	def pipe_output(self, stream, error, conn):
+		def _log_stderr(err):
+			for line in err:
+				logging.info("device: %s", line.rstrip())
+		threading.Thread(target=_log_stderr, args=(error,), daemon=True).start()
 		for line in stream:
 			message = {"status": "data", "data": line}
 			conn.sendall( ( json.dumps( message ) + "\n").encode() )
 			if (self.verbose):
 				logging.info(line)
-		error = error.read()
-		if error:
-			message = {"status": "error", "error": f"\"{error}\""}
-			conn.sendall( ( json.dumps( message ) + "\n").encode() )
 	
 	def handle_session(self, conn):
 		with conn:
@@ -175,10 +175,12 @@ class GRH:
 
 		
 	def log_output(self, stream, errors):
+		def _log_stderr(err):
+			for line in err:
+				logging.info("device: %s", line.rstrip())
+		threading.Thread(target=_log_stderr, args=(errors,), daemon=True).start()
 		for line in stream:
 			logging.info(line)
-		for error in errors:
-			logging.error(error)
 
 	def run(self):
 		logging.info('Run process')

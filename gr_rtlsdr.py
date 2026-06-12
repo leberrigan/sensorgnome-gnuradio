@@ -111,7 +111,7 @@ class rtlsdr_detect_pulse(gr.top_block):
             if action in ("set_rf_gain", "set_if_gain", "set_freq") and args:
                 response = getattr(self, action)(*args)
                 if response:
-                    print(response, flush=True)
+                    print(response, file=sys.stderr, flush=True)
             
     def get_samp_rate(self):
         return self.samp_rate
