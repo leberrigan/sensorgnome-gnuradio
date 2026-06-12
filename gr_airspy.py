@@ -42,7 +42,7 @@ class airspy_detect_pulse(gr.top_block):
         self.freq = freq = self.args.freq
         self.freq_offset = freq_offset = float(4e3)
         self.filter_cutoff_freq = filter_cutoff_freq = 12e3
-        self.filter_transition_width = filter_transition_width = 8e3
+        self.filter_transition_width = filter_transition_width = 48e3
         self.device = device = self.args.device
         self.verbose = verbose = self.args.verbose
         self.port = port = self.args.port
@@ -93,7 +93,8 @@ class airspy_detect_pulse(gr.top_block):
             samp_rate=samp_rate / decimation_factor,
             min_snr_db=6,
             debounce_samples=10,
-            pulse_len_ms=2.5
+            pulse_len_ms=2.5,
+            high_perf=not self.args.low_perf,
         )
 
         ##################################################
@@ -188,6 +189,7 @@ class airspy_detect_pulse(gr.top_block):
         parser.add_argument('-v', '--verbose', help='Print messages', default = False, action="store_true")
         parser.add_argument('-a', '--additional_args', help='Arguments to pass on to osmosdr on init', default = "sensitivity=21", type = str)
         parser.add_argument('-g', '--gain', help='Gain as JSON, e.g. \'{"rf":15,"bb":20,"if":0}\'', default = '{}', type = str)
+        parser.add_argument('--low_perf', help='Disable FFT/subtraction for lower CPU use', default=False, action='store_true')
         return parser.parse_args()
 
 

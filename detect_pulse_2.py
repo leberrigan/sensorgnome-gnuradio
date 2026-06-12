@@ -203,6 +203,8 @@ class Pulse_Detector:
                   f"(max corr: {max_corr:.3f}, mag mean={np.mean(mag):.5f} max={np.max(mag):.5f})")
         if self.output_type == "stream":
             for pulse in rising_edges:
+                # ts, dfreq, max_db, noise_db, snr_db, dur_ms, n_samples, 2048, 0, 0, phase
+                # 1781273374.552473,3.938,-8.73,-26.15,34.84,2.500,120,2048,0,0,-1.929269
                 print(f"p{self.port},{pulse}", flush=True)
         if (self.output_type == "test"):
             output += rising_edges
@@ -248,12 +250,11 @@ class Pulse_Detector:
         return segments
 
     def detect_edges_matched_filter(self, signal_iq=None):
-        """Detect rising edges using a matched filter with vectorised statistics.
+        """Detect rising edges using a fully-vectorised pipeline.
 
-        Hot-path cost reduced from O(N * template_length) to O(N + N log N):
-          - scipy.signal.correlate computes all dot products in one FFT pass
-          - prefix sums give O(1) window mean, variance, baseline, and plateau
-          - only windows that overlap a subtracted pulse fall back to O(template_length)
+        No Python loop over samples — all per-window statistics are computed with
+        numpy array operations, and scipy.signal.find_peaks replaces the manual
+        local-maximum scan.  The Python loop only runs over detected pulses (rare).
         """
         signal_magnitude = np.abs(signal_iq)
         template_length = len(self.edge_template)
@@ -271,8 +272,7 @@ class Pulse_Detector:
         synthesized_signal_iq = np.zeros(len(signal_iq), dtype=np.complex64)
         pulses = []
 
-        # --- Precompute prefix sums on the initial signal_magnitude ---
-        # prefix[k] = sum(signal_magnitude[0:k]), so window [a:b] sum = prefix[b] - prefix[a]
+        # --- Prefix sums for O(1) window statistics ---
         prefix = np.empty(signal_length + 1)
         prefix[0] = 0.0
         np.cumsum(signal_magnitude, out=prefix[1:])
@@ -280,116 +280,87 @@ class Pulse_Detector:
         prefix_sq[0] = 0.0
         np.cumsum(signal_magnitude ** 2, out=prefix_sq[1:])
 
-        # --- Precompute raw cross-correlations ---
-        # raw_xcorr[k] = dot(signal_magnitude[k : k+template_length], edge_template)
-        # The edge_template is zero-mean, so the normalised correlation reduces to raw_xcorr / norm.
+        # --- Cross-correlation (vectorised; 'auto' picks direct for the short template) ---
         tmp = time.time()
-        raw_xcorr = signal.correlate(signal_magnitude, self.edge_template, mode='valid', method='fft')
+        raw_xcorr = signal.correlate(signal_magnitude, self.edge_template, mode='valid', method='auto')
         self.times["get_correlations1"] += time.time() - tmp
+
+        # --- Vectorised normalised correlation for every window position ---
+        # Original loop: for i in 1..correlation_length-2, ws=i+1, correlations[i+1]=xcorr/norm
+        # so ws ranges 2..correlation_length-1.
+        ws_arr = np.arange(2, correlation_length)       # window-start indices
+        we_arr = ws_arr + template_length
+
+        w_sum = prefix[we_arr] - prefix[ws_arr]
+        w_sq  = prefix_sq[we_arr] - prefix_sq[ws_arr]
+        mean  = w_sum / template_length
+        var   = np.maximum(0.0, w_sq / template_length - mean ** 2)
+
+        valid_var = var > 1e-7
+        norm = np.where(valid_var, np.sqrt(var * template_length), 1.0)
+        corr_norm = np.where(valid_var, raw_xcorr[ws_arr] / norm, 0.0)
 
         correlations = np.zeros(correlation_length, dtype=float)
         if self.prev_chunk_correlations is not None:
             correlations[:len(self.prev_chunk_correlations)] = self.prev_chunk_correlations
+        correlations[ws_arr] = corr_norm   # fill positions 2..correlation_length-1
 
-        # dirty_end: signal_magnitude[0:dirty_end] may have been modified by a subtraction.
-        # Windows whose start index is less than dirty_end are recomputed from signal_magnitude.
-        dirty_end = 0
-        # blocked_until: skip detection for iterations i < blocked_until to prevent
-        # double-detection when apply_best_peak_subtraction returns None (no subtraction,
-        # dirty_end not advanced) and the next iterations reuse stale raw_xcorr values.
-        blocked_until = 0
+        # --- Vectorised baseline / plateau for all windows ---
+        baseline_arr = (prefix[ws_arr + third] - prefix[ws_arr]) / third
+        plateau_arr  = (prefix[we_arr] - prefix[we_arr - third]) / third
+        mag_delta_arr = plateau_arr - baseline_arr
+        snr_arr = 20.0 * np.log10(np.maximum(
+            plateau_arr / np.maximum(baseline_arr, eps), eps))
 
-        for i in range(1, correlation_length - 1):
-            ws = i + 1                  # window start in signal_magnitude
-            we = ws + template_length   # window end (exclusive)
+        # --- Peak finding: local maxima above threshold, spaced >= edge_window_samples ---
+        candidate_peaks, _ = signal.find_peaks(
+            correlations,
+            height=self.edge_correlation_threshold,
+            distance=self.edge_window_samples,
+        )
 
-            is_dirty = ws < dirty_end
+        # Map peak indices (into correlations[]) back to ws_arr indices (offset by 2)
+        valid_pk = candidate_peaks[(candidate_peaks >= 2) & (candidate_peaks < correlation_length)]
+        j_arr = valid_pk - 2   # indices into ws_arr / baseline_arr / plateau_arr
 
-            # --- O(1) window statistics (or O(template_length) fallback for dirty windows) ---
-            if is_dirty:
-                w = signal_magnitude[ws:we]
-                w_sum = float(w.sum())
-                w_sum_sq = float(np.dot(w, w))
-                xcorr_val = float(np.dot(w, self.edge_template))
-            else:
-                w_sum = float(prefix[we] - prefix[ws])
-                w_sum_sq = float(prefix_sq[we] - prefix_sq[ws])
-                xcorr_val = float(raw_xcorr[ws])
+        # Filter by magnitude delta and SNR
+        keep = (
+            (mag_delta_arr[j_arr] >= self.edge_magnitude_threshold) &
+            (snr_arr[j_arr] >= self.min_snr_db)
+        )
+        j_arr    = j_arr[keep]
+        valid_pk = valid_pk[keep]
 
-            mean = w_sum / template_length
-            variance = max(0.0, w_sum_sq / template_length - mean * mean)
+        self.pre_fft_results += len(j_arr)
 
-            if variance < 1e-7:
-                continue
+        # --- Per-pulse processing (rare) ---
+        for idx in range(len(valid_pk)):
+            j  = int(j_arr[idx])
+            ws = int(ws_arr[j])
+            we = int(we_arr[j])
+            i_corr = int(valid_pk[idx])
 
-            norm = np.sqrt(variance * template_length)
-            # edge_template is zero-mean: dot(x - mean, t) = dot(x, t) since sum(t)=0
-            correlations[i + 1] = xcorr_val / norm
-
-            # --- Baseline (first third) and plateau (last third) ---
-            if is_dirty:
-                baseline = float(signal_magnitude[ws : ws + third].sum()) / third
-                plateau = float(signal_magnitude[we - third : we].sum()) / third
-            else:
-                baseline = float(prefix[ws + third] - prefix[ws]) / third
-                plateau = float(prefix[we] - prefix[we - third]) / third
-
-            # --- Peak detection ---
-            # Stores at [i+1] then checks [i] (computed last iteration) as "current".
-            # This one-step delay allows the look-ahead comparison to work correctly.
-            corr = correlations[i]          # peak candidate: set by previous iteration
-            prev_corr = correlations[i - 1]
-            next_corr = correlations[i + 1] # look-ahead: just computed above
-            if corr <= prev_corr or corr <= next_corr or corr < self.edge_correlation_threshold:
-                continue
-
-            # Refractory block: skip this iteration if we just detected at i-1 or i-2.
-            # Prevents double-detection when subtraction returned None and raw_xcorr is reused.
-            if i < blocked_until:
-                continue
-
-            # Trailing-window suppression: reject if any earlier peak in the edge window was stronger.
-            trailing_start = max(0, i - self.edge_window_samples)
-            if corr <= np.max(correlations[trailing_start:i]):
-                continue
-
-            if plateau < baseline:
-                continue
-
-            magnitude_delta = plateau - baseline
-            magnitude_delta_db = 10.0 * np.log10(max(magnitude_delta, eps))
-            # 20*log10 of amplitude ratio = standard power-equivalent SNR in dB
-            snr_db = 20.0 * np.log10(max(plateau / max(baseline, eps), eps))
-            plateau_db = 10.0 * np.log10(max(plateau, eps))
-            baseline_db = 10.0 * np.log10(max(baseline, eps))
-
-            self.pre_fft_results += 1
-            if magnitude_delta < self.edge_magnitude_threshold or snr_db < self.min_snr_db:
-                continue
-
-            edge_index = i + third
+            edge_index       = ws + third
             edge_sample_index = max(0, min(int(round(edge_index)), signal_length - 1))
-            edge_time = edge_index / self.samp_rate
+            edge_time         = edge_index / self.samp_rate
+
+            plateau_db  = 10.0 * np.log10(max(float(plateau_arr[j]),  eps))
+            baseline_db = 10.0 * np.log10(max(float(baseline_arr[j]), eps))
+            snr_db      = float(snr_arr[j])
 
             sv = signal_iq[edge_sample_index]
             edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
 
-            # Low-performance mode: skip FFT and tone subtraction entirely.
-            # Frequency offset is reported as 0; all other fields are still valid.
             if not self.high_perf:
                 window_start = edge_sample_index
-                window_end = min(edge_sample_index + self.pulse_len_samples, signal_length)
-                window_len = window_end - window_start
+                window_end   = min(edge_sample_index + self.pulse_len_samples, signal_length)
+                window_len   = window_end - window_start
                 pulses.append(
                     f"{self.time_chunk_start + edge_time:.6f},0,"
                     f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
                     f"{1e3 * window_len / self.samp_rate:.3f},{window_len},"
                     f"2048,0,0,{edge_phase_rad:.6f}"
                 )
-                correlations[i] = 0.0
-                if i + 1 < len(correlations):
-                    correlations[i + 1] = 0.0
-                blocked_until = i + 3
                 continue
 
             tmp = time.time()
@@ -399,15 +370,14 @@ class Pulse_Detector:
                 continue
 
             tmp = time.time()
-            result["edge_idx"] = edge_sample_index
+            result["edge_idx"]       = edge_sample_index
             result["edge_phase_rad"] = edge_phase_rad
 
             window_start = result["fft_window_start_idx"]
-            window_end = result["fft_window_end_idx"]
+            window_end   = result["fft_window_end_idx"]
             window_signal_before = np.array(signal_iq[window_start:window_end], copy=True)
-            window_is_dirty = window_start < dirty_end
 
-            subtraction = self.apply_best_peak_subtraction(window_signal_before, result, window_is_dirty)
+            subtraction = self.apply_best_peak_subtraction(window_signal_before, result, False)
 
             if subtraction is not None:
                 synthesized_signal_iq[window_start:window_end] = subtraction.get("subtraction_tone")
@@ -423,26 +393,13 @@ class Pulse_Detector:
                 f"2048,0,0,{result['edge_phase_rad']:.6f}"
             )
 
-            if subtraction is not None:
-                subtraction.setdefault("iq_before", window_signal_before)
-                if subtraction["signal_after"] is not None:
-                    signal_iq[window_start:window_end] = subtraction["signal_after"]
-                    signal_magnitude[window_start:window_end] = np.abs(subtraction["signal_after"])
-                    dirty_end = max(dirty_end, window_end)
-
-            # Zero the detected peak AND the look-ahead slot to prevent re-detection
-            # on the same edge (next iteration sees corr=high, prev_corr=0, fires again).
-            correlations[i] = 0.0
-            if i + 1 < len(correlations):
-                correlations[i + 1] = 0.0
-            # Block next 2 iterations: prevents raw_xcorr reuse double-detection when
-            # apply_best_peak_subtraction returns None and dirty_end is not advanced.
-            blocked_until = i + 3
+            if subtraction is not None and subtraction["signal_after"] is not None:
+                signal_iq[window_start:window_end] = subtraction["signal_after"]
 
             self.times["subtract_signal"] += time.time() - tmp
 
         self.prev_chunk_correlations = correlations[-2:]
-        return pulses, np.array(correlations, dtype=float), signal_iq, synthesized_signal_iq
+        return pulses, correlations, signal_iq, synthesized_signal_iq
         
     def rolling_noise_buffer( self, new_samples ):    
         idx = len(self.noise_buffer) % self.noise_buffer_len

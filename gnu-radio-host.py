@@ -56,15 +56,32 @@ class GRH:
 			else:
 				response = {"status": "command_sent", "port": port, "action": "set_freq", "value": hz_value}
 
-		elif action in ( "rf_gain", "if_gain", "lna_gain", "sensitivity_gain", "agc", "bias_tee" ) and len(args) == 2:
+		elif action in ("rf_gain", "if_gain", "lna_gain", "sensitivity_gain", "agc", "bias_tee", "tuner_gain") and len(args) == 2:
 			port, value = args
+			# tuner_gain is the VAH/rtl_tcp name for RF gain; map it to rf_gain for GnuRadio
+			grh_action = "rf_gain" if action == "tuner_gain" else action
 			try:
-				self.devices[int(port)].stdin.write(f"set_{action} {value}\n")
+				self.devices[int(port)].stdin.write(f"set_{grh_action} {value}\n")
 				self.devices[int(port)].stdin.flush()
 			except Exception as e:
 				response = {"status": "error", "message": str(e)}
 			else:
 				response = {"status": "command_sent", "port": port, "action": action, "value": value}
+
+		elif action in {"if_gain1", "if_gain2", "if_gain3", "if_gain4", "if_gain5", "if_gain6"} and len(args) == 2:
+			# RTL-SDR has a single IF gain in GnuRadio; stage number is dropped
+			port, value = args
+			try:
+				self.devices[int(port)].stdin.write(f"set_if_gain {value}\n")
+				self.devices[int(port)].stdin.flush()
+			except Exception as e:
+				response = {"status": "error", "message": str(e)}
+			else:
+				response = {"status": "command_sent", "port": port, "action": action, "value": value}
+
+		elif action in {"gain_mode", "test_mode", "agc_mode", "rf_filter", "mixer_gain", "if_filter"} and args:
+			# Accepted but not forwarded — no GnuRadio equivalent for these VAH/rtl_tcp-specific params
+			response = {"status": "ok", "action": action}
 
 		elif action in ("start", "stop") and args:
 			port = int(args[0])
@@ -92,6 +109,10 @@ class GRH:
 
 		script_name = self.SCRIPT_NAMES.get(dev_type, dev_type)
 		script = f"/usr/bin/gr_{script_name}.py"
+		# Separate --flag tokens from SDR device args (e.g. "sensitivity=21 --low_perf")
+		tokens = additional_args.split()
+		cli_flags = [t for t in tokens if t.startswith('--')]
+		sdr_args  = ' '.join(t for t in tokens if not t.startswith('--'))
 		cmd = [
 			"python3", script,
 			"--port", str(port),
@@ -100,8 +121,8 @@ class GRH:
 			"--samp_rate", str(samp_rate),
 			"--target_rate", str(target_rate),
 			"--gain", str(gain),
-			"--additional_args", additional_args
-		]
+			"--additional_args", sdr_args,
+		] + cli_flags
 		try:
 			proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 		except Exception as e:

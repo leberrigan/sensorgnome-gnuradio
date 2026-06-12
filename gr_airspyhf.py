@@ -39,7 +39,7 @@ class airspyhf_detect_pulse(gr.top_block):
         self.freq           = freq           = self.args.freq
         self.freq_offset    = freq_offset    = float(4e3)
         self.filter_cutoff_freq      = filter_cutoff_freq      = 12e3
-        self.filter_transition_width = filter_transition_width = 8e3
+        self.filter_transition_width = filter_transition_width = 24e3
         self.device         = device         = self.args.device
         self.verbose        = verbose        = self.args.verbose
         self.port           = port           = self.args.port
@@ -98,6 +98,7 @@ class airspyhf_detect_pulse(gr.top_block):
             min_snr_db=6,
             debounce_samples=10,
             pulse_len_ms=2.5,
+            high_perf=not self.args.low_perf,
         )
 
         ##################################################
@@ -125,6 +126,10 @@ class airspyhf_detect_pulse(gr.top_block):
         self.soapy_airspyhf_source.set_gain(0, 'LNA', self.gain_lna)
         return 'success'
 
+    def set_sensitivity_gain(self, gain):
+        # Values are in dB (0 = max sensitivity / no attenuation, -48 = max attenuation).
+        return self.set_rf_gain(float(gain))
+
     # ------------------------------------------------------------------
     # stdin command loop
     # ------------------------------------------------------------------
@@ -135,7 +140,7 @@ class airspyhf_detect_pulse(gr.top_block):
             if not parts:
                 continue
             action, args = parts[0], parts[1:]
-            if action in ('set_freq', 'set_rf_gain', 'set_lna_gain') and args:
+            if action in ('set_freq', 'set_rf_gain', 'set_lna_gain', 'set_sensitivity_gain') and args:
                 try:
                     response = getattr(self, action)(*args)
                     if response:

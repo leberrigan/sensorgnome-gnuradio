@@ -96,6 +96,7 @@ class funcubepp_detect_pulse(gr.top_block):
             min_snr_db=6,
             debounce_samples=10,
             pulse_len_ms=2.5,
+            high_perf=not self.args.low_perf,
         )
 
         ##################################################
