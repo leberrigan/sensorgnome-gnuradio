@@ -272,131 +272,175 @@ class Pulse_Detector:
         synthesized_signal_iq = np.zeros(len(signal_iq), dtype=np.complex64)
         pulses = []
 
-        # --- Prefix sums for O(1) window statistics ---
-        prefix = np.empty(signal_length + 1)
-        prefix[0] = 0.0
-        np.cumsum(signal_magnitude, out=prefix[1:])
-        prefix_sq = np.empty(signal_length + 1)
-        prefix_sq[0] = 0.0
-        np.cumsum(signal_magnitude ** 2, out=prefix_sq[1:])
-
-        # --- Cross-correlation (vectorised; 'auto' picks direct for the short template) ---
-        tmp = time.time()
-        raw_xcorr = signal.correlate(signal_magnitude, self.edge_template, mode='valid', method='auto')
-        self.times["get_correlations1"] += time.time() - tmp
-
-        # --- Vectorised normalised correlation for every window position ---
+        # --- Constant window-position arrays (peak position == window-start index) ---
         # Original loop: for i in 1..correlation_length-2, ws=i+1, correlations[i+1]=xcorr/norm
         # so ws ranges 2..correlation_length-1.
         ws_arr = np.arange(2, correlation_length)       # window-start indices
         we_arr = ws_arr + template_length
 
-        w_sum = prefix[we_arr] - prefix[ws_arr]
-        w_sq  = prefix_sq[we_arr] - prefix_sq[ws_arr]
-        mean  = w_sum / template_length
-        var   = np.maximum(0.0, w_sq / template_length - mean ** 2)
-
-        valid_var = var > 1e-7
-        norm = np.where(valid_var, np.sqrt(var * template_length), 1.0)
-        corr_norm = np.where(valid_var, raw_xcorr[ws_arr] / norm, 0.0)
-
-        correlations = np.zeros(correlation_length, dtype=float)
-        if self.prev_chunk_correlations is not None:
-            correlations[:len(self.prev_chunk_correlations)] = self.prev_chunk_correlations
-        correlations[ws_arr] = corr_norm   # fill positions 2..correlation_length-1
-
-        # --- Vectorised baseline / plateau for all windows ---
-        baseline_arr = (prefix[ws_arr + third] - prefix[ws_arr]) / third
-        plateau_arr  = (prefix[we_arr] - prefix[we_arr - third]) / third
-        mag_delta_arr = plateau_arr - baseline_arr
-        snr_arr = 20.0 * np.log10(np.maximum(
-            plateau_arr / np.maximum(baseline_arr, eps), eps))
-
-        # --- Peak finding: local maxima above threshold, spaced >= edge_window_samples ---
-        candidate_peaks, _ = signal.find_peaks(
-            correlations,
-            height=self.edge_correlation_threshold,
-            distance=self.edge_window_samples,
-        )
-
-        # Map peak indices (into correlations[]) back to ws_arr indices (offset by 2)
-        valid_pk = candidate_peaks[(candidate_peaks >= 2) & (candidate_peaks < correlation_length)]
-        j_arr = valid_pk - 2   # indices into ws_arr / baseline_arr / plateau_arr
-
-        # Filter by magnitude delta and SNR
-        keep = (
-            (mag_delta_arr[j_arr] >= self.edge_magnitude_threshold) &
-            (snr_arr[j_arr] >= self.min_snr_db)
-        )
-        j_arr    = j_arr[keep]
-        valid_pk = valid_pk[keep]
-
-        self.pre_fft_results += len(j_arr)
-
-        # --- Per-pulse processing (rare) ---
-        for idx in range(len(valid_pk)):
-            j  = int(j_arr[idx])
-            ws = int(ws_arr[j])
-            we = int(we_arr[j])
-            i_corr = int(valid_pk[idx])
-
-            edge_index       = ws + third
-            edge_sample_index = max(0, min(int(round(edge_index)), signal_length - 1))
-            edge_time         = edge_index / self.samp_rate
-
-            plateau_db  = 10.0 * np.log10(max(float(plateau_arr[j]),  eps))
-            baseline_db = 10.0 * np.log10(max(float(baseline_arr[j]), eps))
-            snr_db      = float(snr_arr[j])
-
-            sv = signal_iq[edge_sample_index]
-            edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
-
-            if not self.high_perf:
-                window_start = edge_sample_index
-                window_end   = min(edge_sample_index + self.pulse_len_samples, signal_length)
-                window_len   = window_end - window_start
-                pulses.append(
-                    f"{self.time_chunk_start + edge_time:.6f},0,"
-                    f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
-                    f"{1e3 * window_len / self.samp_rate:.3f},{window_len},"
-                    f"2048,0,0,{edge_phase_rad:.6f}"
-                )
-                continue
+        def _window_stats():
+            """Recompute correlations + per-window statistics from the *current*
+            (possibly subtracted) signal_magnitude.  Cheap enough to repeat a few
+            times per chunk: the expensive thing the vectorised rewrite removed was
+            the CPython per-sample loop, not these few numpy passes."""
+            prefix = np.empty(signal_length + 1)
+            prefix[0] = 0.0
+            np.cumsum(signal_magnitude, out=prefix[1:])
+            prefix_sq = np.empty(signal_length + 1)
+            prefix_sq[0] = 0.0
+            np.cumsum(signal_magnitude ** 2, out=prefix_sq[1:])
 
             tmp = time.time()
-            result = self.compute_edge_fft(signal_iq, edge_time)
-            self.times["get_edge_fft"] += time.time() - tmp
-            if result is None:
-                continue
+            raw_xcorr = signal.correlate(signal_magnitude, self.edge_template,
+                                         mode='valid', method='auto')
+            self.times["get_correlations1"] += time.time() - tmp
 
-            tmp = time.time()
-            result["edge_idx"]       = edge_sample_index
-            result["edge_phase_rad"] = edge_phase_rad
+            w_sum = prefix[we_arr] - prefix[ws_arr]
+            w_sq  = prefix_sq[we_arr] - prefix_sq[ws_arr]
+            mean  = w_sum / template_length
+            var   = np.maximum(0.0, w_sq / template_length - mean ** 2)
 
-            window_start = result["fft_window_start_idx"]
-            window_end   = result["fft_window_end_idx"]
-            window_signal_before = np.array(signal_iq[window_start:window_end], copy=True)
+            valid_var = var > 1e-7
+            norm = np.where(valid_var, np.sqrt(var * template_length), 1.0)
+            corr_norm = np.where(valid_var, raw_xcorr[ws_arr] / norm, 0.0)
 
-            subtraction = self.apply_best_peak_subtraction(window_signal_before, result, False)
+            correlations = np.zeros(correlation_length, dtype=float)
+            if self.prev_chunk_correlations is not None:
+                correlations[:len(self.prev_chunk_correlations)] = self.prev_chunk_correlations
+            correlations[ws_arr] = corr_norm   # fill positions 2..correlation_length-1
 
-            if subtraction is not None:
-                synthesized_signal_iq[window_start:window_end] = subtraction.get("subtraction_tone")
-                result["subtraction"] = subtraction
-                pulse_offset_hz = subtraction["selected_peak"]["frequency_hz"]
-            else:
-                pulse_offset_hz = 0
+            baseline_arr = (prefix[ws_arr + third] - prefix[ws_arr]) / third
+            plateau_arr  = (prefix[we_arr] - prefix[we_arr - third]) / third
+            mag_delta_arr = plateau_arr - baseline_arr
+            snr_arr = 20.0 * np.log10(np.maximum(
+                plateau_arr / np.maximum(baseline_arr, eps), eps))
+            return correlations, baseline_arr, plateau_arr, mag_delta_arr, snr_arr
 
-            pulses.append(
-                f"{self.time_chunk_start + edge_time:.6f},{pulse_offset_hz / 1e3:.3f},"
-                f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
-                f"{1e3 * len(window_signal_before) / self.samp_rate:.3f},{len(window_signal_before)},"
-                f"2048,0,0,{result['edge_phase_rad']:.6f}"
+        # --- Multi-round detect / subtract / re-correlate ---
+        # An overlapping pulse's rising edge is buried under the plateau of the
+        # stronger pulse covering it, so a single correlation pass collapses both
+        # into one peak.  Round 1 finds the strongest edges and subtracts their
+        # tones from signal_iq/magnitude; round 2+ re-correlates the *cleaned*
+        # signal, exposing the previously buried edges.  This restores the
+        # overlap-resolution the original sample-by-sample loop had while keeping
+        # the vectorised cost (the dirty regions, and thus the work, stay small).
+        # Low-perf mode does no subtraction, so a single round is all it can do.
+        MAX_ROUNDS = 4 if self.high_perf else 1
+        # Re-detection guard: an edge already emitted this chunk (within a few
+        # samples) is skipped, so a pulse whose subtraction failed is not emitted
+        # again next round.  Kept small (= third) so genuinely distinct nearby
+        # edges still survive.
+        dedup_tol = max(1, third)
+        emitted_edges = []
+        correlations = None
+
+        for _round in range(MAX_ROUNDS):
+            (correlations, baseline_arr, plateau_arr,
+             mag_delta_arr, snr_arr) = _window_stats()
+
+            # --- Peak finding: local maxima above threshold, spaced >= edge_window_samples ---
+            candidate_peaks, _ = signal.find_peaks(
+                correlations,
+                height=self.edge_correlation_threshold,
+                distance=self.edge_window_samples,
             )
 
-            if subtraction is not None and subtraction["signal_after"] is not None:
-                signal_iq[window_start:window_end] = subtraction["signal_after"]
+            # Map peak indices (into correlations[]) back to ws_arr indices (offset by 2)
+            valid_pk = candidate_peaks[(candidate_peaks >= 2) & (candidate_peaks < correlation_length)]
+            j_arr = valid_pk - 2   # indices into ws_arr / baseline_arr / plateau_arr
 
-            self.times["subtract_signal"] += time.time() - tmp
+            # Filter by magnitude delta and SNR
+            keep = (
+                (mag_delta_arr[j_arr] >= self.edge_magnitude_threshold) &
+                (snr_arr[j_arr] >= self.min_snr_db)
+            )
+            j_arr    = j_arr[keep]
+            valid_pk = valid_pk[keep]
+
+            new_this_round = 0
+
+            # --- Per-pulse processing (rare) ---
+            for idx in range(len(valid_pk)):
+                j  = int(j_arr[idx])
+                ws = int(ws_arr[j])
+                we = int(we_arr[j])
+
+                edge_index       = ws + third
+                edge_sample_index = max(0, min(int(round(edge_index)), signal_length - 1))
+                edge_time         = edge_index / self.samp_rate
+
+                # Already emitted this chunk (e.g. a failed-subtraction edge that
+                # re-appears unchanged in a later round) → skip.
+                if any(abs(edge_sample_index - e) <= dedup_tol for e in emitted_edges):
+                    continue
+
+                self.pre_fft_results += 1
+
+                plateau_db  = 10.0 * np.log10(max(float(plateau_arr[j]),  eps))
+                baseline_db = 10.0 * np.log10(max(float(baseline_arr[j]), eps))
+                snr_db      = float(snr_arr[j])
+
+                sv = signal_iq[edge_sample_index]
+                edge_phase_rad = float(np.arctan2(sv.imag, sv.real))
+
+                if not self.high_perf:
+                    window_start = edge_sample_index
+                    window_end   = min(edge_sample_index + self.pulse_len_samples, signal_length)
+                    window_len   = window_end - window_start
+                    pulses.append(
+                        f"{self.time_chunk_start + edge_time:.6f},0,"
+                        f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
+                        f"{1e3 * window_len / self.samp_rate:.3f},{window_len},"
+                        f"2048,0,0,{edge_phase_rad:.6f}"
+                    )
+                    emitted_edges.append(edge_sample_index)
+                    new_this_round += 1
+                    continue
+
+                tmp = time.time()
+                result = self.compute_edge_fft(signal_iq, edge_time)
+                self.times["get_edge_fft"] += time.time() - tmp
+                if result is None:
+                    continue
+
+                tmp = time.time()
+                result["edge_idx"]       = edge_sample_index
+                result["edge_phase_rad"] = edge_phase_rad
+
+                window_start = result["fft_window_start_idx"]
+                window_end   = result["fft_window_end_idx"]
+                window_signal_before = np.array(signal_iq[window_start:window_end], copy=True)
+
+                subtraction = self.apply_best_peak_subtraction(window_signal_before, result, False)
+
+                if subtraction is not None:
+                    synthesized_signal_iq[window_start:window_end] = subtraction.get("subtraction_tone")
+                    result["subtraction"] = subtraction
+                    pulse_offset_hz = subtraction["selected_peak"]["frequency_hz"]
+                else:
+                    pulse_offset_hz = 0
+
+                pulses.append(
+                    f"{self.time_chunk_start + edge_time:.6f},{pulse_offset_hz / 1e3:.3f},"
+                    f"{plateau_db:.2f},{baseline_db:.2f},{snr_db:.2f},"
+                    f"{1e3 * len(window_signal_before) / self.samp_rate:.3f},{len(window_signal_before)},"
+                    f"2048,0,0,{result['edge_phase_rad']:.6f}"
+                )
+                emitted_edges.append(edge_sample_index)
+                new_this_round += 1
+
+                # Feed the subtraction back into both signal_iq and signal_magnitude
+                # so the next round re-correlates the cleaned signal and can expose
+                # any pulse that was buried under this one.
+                if subtraction is not None and subtraction["signal_after"] is not None:
+                    signal_iq[window_start:window_end] = subtraction["signal_after"]
+                    signal_magnitude[window_start:window_end] = np.abs(subtraction["signal_after"])
+
+                self.times["subtract_signal"] += time.time() - tmp
+
+            # No new edges exposed this round → further rounds cannot help.
+            if new_this_round == 0:
+                break
 
         self.prev_chunk_correlations = correlations[-2:]
         return pulses, correlations, signal_iq, synthesized_signal_iq
