@@ -376,8 +376,18 @@ class Pulse_Detector:
 
                 self.pre_fft_results += 1
 
-                plateau_db  = 10.0 * np.log10(max(float(plateau_arr[j]),  eps))
-                baseline_db = 10.0 * np.log10(max(float(baseline_arr[j]), eps))
+                # sig/noise are reported as power dB (20*log10 of mean amplitude
+                # == 10*log10 of power) to match the VAH (FindPulseFDBatch)
+                # convention that every downstream consumer assumes:
+                #   - find_tags converts back with 10^(sig/10) (power) and groups
+                #     pulses by a sig_slop_dB window;
+                #   - burstfinder reports SNR as sig - noise;
+                #   - pulsefilter.js gates bursts on a sig SIGNAL_SLOP window.
+                # Using 10*log10(amplitude) here would halve every reported level
+                # and SNR margin relative to VAH. snr_db already = 20*log10(ratio),
+                # so with this scaling sig - noise == snr_db.
+                plateau_db  = 20.0 * np.log10(max(float(plateau_arr[j]),  eps))
+                baseline_db = 20.0 * np.log10(max(float(baseline_arr[j]), eps))
                 snr_db      = float(snr_arr[j])
 
                 sv = signal_iq[edge_sample_index]
