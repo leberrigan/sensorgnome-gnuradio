@@ -115,7 +115,22 @@ class Pulse_Detector:
         self.reference_time = None
         self.time_chunk_start = None
         self.time_error_threshold = 0.1 # seconds
-        
+
+        # Startup-drain clock anchoring: the SDR pipeline (USB + SoapySDR ring)
+        # arrives prefilled, so anchoring reference_time on the first chunk bakes a
+        # variable ~140 ms latency into every timestamp. Instead, consume (and
+        # discard) the startup backlog without emitting, then anchor only once
+        # detect() is being called at real-time pace (ring drained) — collapsing the
+        # offset to ~one USB transfer block and making it stable across reboots.
+        # Skipped entirely in 'test' mode (offline data has no pipeline latency).
+        self.startup_drained = False
+        self.drain_first_walltime = None
+        self.drain_prev_walltime = None
+        self.drain_catchup_frac = 0.6   # wall gap >= frac*chunk_dur => arriving real-time
+        self.drain_catchup_needed = 2   # consecutive real-time-paced calls before anchoring
+        self.drain_catchup_count = 0
+        self.max_drain_s = 10.0         # safety cap: anchor anyway after this long
+
         self.prev_chunk_end_samples = None
         self.pulse_iq_padding_start = []
         self.pulse_iq_padding_end = []
@@ -129,6 +144,19 @@ class Pulse_Detector:
         self.edge_magnitude_threshold = 2e-4  # Minimum magnitude change to accept an edge
         self.fft_amplitude_threshold_db = 10 # relative dB from max
         self.prev_chunk_correlations = None
+
+        # --- Chunk-boundary handling ---
+        # A pulse whose edge is in chunk N but whose FFT window crosses into N+1
+        # must be deferred to N+1 (its window isn't complete yet). The carried-over
+        # tail must be pulse_len PLUS a guard, so the deferred edge re-appears past
+        # the buffer-start dead zone next chunk (edges with index < 2+third can't be
+        # detected: ws_arr starts at 2 and edge_index = ws + third). recent_emitted_
+        # edges_abs dedups across chunks (by absolute sample index) so the extra
+        # overlap doesn't cause double detections.
+        self.boundary_guard_samples = len(self.edge_template)
+        self.overlap_samples = self.pulse_len_samples + self.boundary_guard_samples
+        self.recent_emitted_edges_abs = []
+        self.buffer_abs_start = 0
 
         self.prev_chunk_last_pulse_samples = None
         self.times = {
@@ -164,34 +192,68 @@ class Pulse_Detector:
         timestamps = []
         # out = output_items[0]
         
-        # Set clock
+        n = len(raw_iq) # Number of new input items
+
+        # --- Clock anchoring ---
         if (self.output_type == "test"):
             self.reference_time = 0
+            self.startup_drained = True
+        elif not self.startup_drained:
+            # Drain the prefilled startup backlog without emitting, then anchor once
+            # detect() is arriving at real-time pace (upstream ring drained).
+            now = time.time()
+            chunk_dur = n / self.samp_rate
+            if self.drain_first_walltime is None:
+                self.drain_first_walltime = now
+                self.drain_prev_walltime = now
+                return n                      # discard first chunk (need a gap to gauge pace)
+            wall_gap = now - self.drain_prev_walltime
+            self.drain_prev_walltime = now
+            if wall_gap >= self.drain_catchup_frac * chunk_dur:
+                self.drain_catchup_count += 1   # this call waited ~one chunk => real-time
+            else:
+                self.drain_catchup_count = 0    # still racing through the backlog
+            if not (self.drain_catchup_count >= self.drain_catchup_needed
+                    or (now - self.drain_first_walltime) >= self.max_drain_s):
+                return n                      # keep draining (discard)
+            # Anchor: this chunk is live; map its newest sample to ~now. No prepend
+            # carried over from the discarded backlog, so this is exact.
+            self.reference_time = now - chunk_dur
+            self.sample_counter = 0
+            self.prev_chunk_end_samples = None
+            self.prev_chunk_correlations = None
+            self.recent_emitted_edges_abs = []
+            self.startup_drained = True
+            if self.verbose:
+                print(f"Clock anchored after {(now - self.drain_first_walltime)*1e3:.0f} ms startup drain")
         elif self.reference_time is None:
             self.reference_time = time.time()
 
-        n = len(raw_iq) # Number of input items
-        
+        self.time_chunk_start = self.reference_time + self.sample_counter / self.samp_rate
+
+        # Resync if the newest sample's estimated time has drifted from wall clock
+        # (e.g. dropped samples make sample_counter lag real time). Measured against
+        # the newest sample (time_chunk_start + n/sr) so it reads ~0 in steady state
+        # and only fires on genuine drift.
+        if (self.output_type != "test"):
+            time_system = time.time()
+            time_error = time_system - (self.time_chunk_start + n / self.samp_rate)
+            if abs(time_error) > self.time_error_threshold:
+                if self.verbose:
+                    print(f"Clock resync: {time_error * 1e3:.1f} ms")
+                self.sample_counter = 0
+                self.reference_time = time_system - n / self.samp_rate
+                self.time_chunk_start = self.reference_time
+                self.recent_emitted_edges_abs = []
+
         # Add pulse length samples to the start of the chunk
         if self.prev_chunk_end_samples is not None:
             raw_iq = np.concatenate([self.prev_chunk_end_samples, raw_iq]).astype(np.complex64)
-
-        
-        self.time_chunk_start = self.reference_time + self.sample_counter / self.samp_rate
-        
-        # Fix clock
-        if (self.output_type != "test"):
-            time_system = time.time()
-            
-            time_error = time_system - self.time_chunk_start
-
-            if (time_error > self.time_error_threshold): 
-                if self.verbose:
-                    print( f"Time error: {(time_error) * 1e3:.3f} ms" )
-                self.sample_counter = 0
-                self.reference_time = time.time()
         
         tmp = time.time()
+        # Absolute sample index of raw_iq[0] (== sample_counter, since the prepend is
+        # the previous buffer's held-back tail). Used for cross-chunk edge dedup.
+        self.buffer_abs_start = self.sample_counter
         # Detect edges
         rising_edges, correlations, subtracted_signal_iq, synthesized_signal_iq = self.detect_edges_matched_filter( raw_iq )
         self.times["detect_edges"] += time.time() - tmp
@@ -217,8 +279,8 @@ class Pulse_Detector:
             self.time_chunk_start = time_estimated + time_error * 0.001 # Slight correction for clock drift
 
         # Store pulse length samples for the next chunk
-        self.prev_chunk_end_samples = subtracted_signal_iq[-self.pulse_len_samples:]
-        return_samples = subtracted_signal_iq[:-self.pulse_len_samples]
+        self.prev_chunk_end_samples = subtracted_signal_iq[-self.overlap_samples:]
+        return_samples = subtracted_signal_iq[:-self.overlap_samples]
 
 
         if hasattr(self, 'csvfile'):
@@ -368,10 +430,13 @@ class Pulse_Detector:
                 edge_index       = ws + third
                 edge_sample_index = max(0, min(int(round(edge_index)), signal_length - 1))
                 edge_time         = edge_index / self.samp_rate
+                abs_edge          = self.buffer_abs_start + edge_sample_index
 
-                # Already emitted this chunk (e.g. a failed-subtraction edge that
-                # re-appears unchanged in a later round) → skip.
-                if any(abs(edge_sample_index - e) <= dedup_tol for e in emitted_edges):
+                # Skip if already emitted this chunk (a failed-subtraction edge that
+                # re-appears in a later round) OR already emitted in the previous
+                # chunk's overlap region (the carried-over tail re-presents it).
+                if any(abs(edge_sample_index - e) <= dedup_tol for e in emitted_edges) or \
+                   any(abs(abs_edge - e) <= dedup_tol for e in self.recent_emitted_edges_abs):
                     continue
 
                 self.pre_fft_results += 1
@@ -404,6 +469,7 @@ class Pulse_Detector:
                         f"2048,0,0,{edge_phase_rad:.6f}"
                     )
                     emitted_edges.append(edge_sample_index)
+                    self.recent_emitted_edges_abs.append(abs_edge)
                     new_this_round += 1
                     continue
 
@@ -437,6 +503,7 @@ class Pulse_Detector:
                     f"2048,0,0,{result['edge_phase_rad']:.6f}"
                 )
                 emitted_edges.append(edge_sample_index)
+                self.recent_emitted_edges_abs.append(abs_edge)
                 new_this_round += 1
 
                 # Feed the subtraction back into both signal_iq and signal_magnitude
@@ -451,6 +518,13 @@ class Pulse_Detector:
             # No new edges exposed this round → further rounds cannot help.
             if new_this_round == 0:
                 break
+
+        # Keep only edges that fall in the tail this chunk carries over (they may
+        # re-appear next chunk and must be deduped); drop the rest so the list
+        # stays bounded.
+        buffer_abs_end = self.buffer_abs_start + signal_length
+        keep_from = buffer_abs_end - self.overlap_samples - dedup_tol
+        self.recent_emitted_edges_abs = [e for e in self.recent_emitted_edges_abs if e >= keep_from]
 
         self.prev_chunk_correlations = correlations[-2:]
         return pulses, correlations, signal_iq, synthesized_signal_iq
