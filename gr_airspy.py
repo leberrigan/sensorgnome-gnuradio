@@ -42,7 +42,7 @@ class airspy_detect_pulse(gr.top_block):
         self.freq = freq = self.args.freq
         self.freq_offset = freq_offset = float(4e3)
         self.filter_cutoff_freq = filter_cutoff_freq = 12e3
-        self.filter_transition_width = filter_transition_width = 48e3
+        self.filter_transition_width = filter_transition_width = 12e3
         self.device = device = self.args.device
         self.verbose = verbose = self.args.verbose
         self.port = port = self.args.port
