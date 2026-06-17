@@ -140,7 +140,20 @@ class Pulse_Detector:
         self.edge_template = self.create_edge_template()
         self.edge_window_samples = max(1, int(self.edge_duration_ms * 1e-3 * self.samp_rate))
         self.envelope = self.get_template_envelope( self.pulse_len_samples, self.edge_window_samples )
-        self.edge_correlation_threshold = 0.98
+        # Two-stage detection (combines GRH's edge/overlap handling with VAH-style
+        # full-pulse sensitivity):
+        #   1. edge_correlation_threshold finds *candidate* edges. Relaxed to 0.95
+        #      in high_perf because stage 2 confirms them; the old 0.98 was too
+        #      strict and missed pulses below ~25 dB SNR (the edge correlation over
+        #      ~15 samples is noisy at moderate SNR).
+        #   2. fft_snr_threshold confirms each candidate by the full-pulse FFT SNR
+        #      (compute_edge_fft): the tag's tone integrates coherently over the
+        #      whole 2.5 ms pulse, so real pulses score high and noise edges low.
+        #      This is the processing gain that gives VAH its low-SNR floor.
+        # In low_perf there is no FFT, so no confirmation is available -> keep the
+        # strict 0.95->0.98 edge gate there to avoid false positives.
+        self.edge_correlation_threshold = 0.95 if self.high_perf else 0.98
+        self.fft_snr_threshold = 17.0  # dB; full-pulse FFT-SNR confirmation gate
         self.edge_magnitude_threshold = 2e-4  # Minimum magnitude change to accept an edge
         self.fft_amplitude_threshold_db = 10 # relative dB from max
         self.prev_chunk_correlations = None
@@ -477,6 +490,13 @@ class Pulse_Detector:
                 result = self.compute_edge_fft(signal_iq, edge_time)
                 self.times["get_edge_fft"] += time.time() - tmp
                 if result is None:
+                    continue
+
+                # Stage 2: full-pulse confirmation. A real pulse's tone integrates
+                # into a strong FFT peak over the whole window; a noise edge does
+                # not. Reject candidates that fail -> lets stage 1 run relaxed
+                # (0.95) for sensitivity without the false positives.
+                if result["fft_snr_db"] < self.fft_snr_threshold:
                     continue
 
                 tmp = time.time()
@@ -985,7 +1005,15 @@ class Pulse_Detector:
         freq_axis = np.fft.fftfreq(fft_length, d=1 / self.samp_rate)
         fft_mag = np.abs(spectrum)
         fft_mag_norm = fft_mag / window_len
-        
+
+        # Full-pulse SNR: the tag's tone integrates coherently into the peak bin
+        # over the whole pulse, while noise stays spread across bins. peak/median
+        # is therefore the FFT processing-gain SNR — the same full-pulse
+        # integration that gives VAH its low-SNR sensitivity. Used to confirm weak
+        # edge candidates (an edge from noise has no sustained tone, so low here).
+        noise_floor_mag = float(np.median(fft_mag)) + 1e-12
+        fft_snr_db = 20.0 * np.log10(float(np.max(fft_mag)) / noise_floor_mag)
+
         # Get the peak magnitude
         peak_indices, _ = signal.find_peaks(fft_mag)
         if peak_indices.size == 0:
@@ -1051,6 +1079,7 @@ class Pulse_Detector:
             "dominant_phase_rad": dominant_phase_rad,
             "fft_window_start_idx": start_idx,
             "fft_window_end_idx": end_idx,
+            "fft_snr_db": fft_snr_db,
             "peaks": peaks,
             "threshold_db": self.fft_amplitude_threshold_db,
         }

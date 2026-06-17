@@ -37,7 +37,7 @@ class airspyhf_detect_pulse(gr.top_block):
 
         self.samp_rate      = samp_rate      = float(self.args.samp_rate)
         self.freq           = freq           = self.args.freq
-        self.freq_offset    = freq_offset    = float(4e3)
+        self.freq_offset    = freq_offset    = float(self.args.freq_offset)
         self.filter_cutoff_freq      = filter_cutoff_freq      = 12e3
         self.filter_transition_width = filter_transition_width = 24e3
         self.device         = device         = self.args.device
@@ -159,6 +159,11 @@ class airspyhf_detect_pulse(gr.top_block):
         parser.add_argument('-tr','--target_rate',   default=48000,                       type=int)
         parser.add_argument('-s', '--samp_rate',     default=192000,                      type=int)
         parser.add_argument('-f', '--freq',          default=166376000,                   type=float)
+        parser.add_argument('-fo','--freq_offset',   default=4000,                        type=float,
+                            help='Hz the radio is tuned below --freq (the signal is digitally '
+                                 'shifted back, so reported offsets are unchanged). Increase it '
+                                 '(e.g. 8000-10000) to move tags further from the DC spike / '
+                                 'near-DC birdies. Keep below the filter cutoff (12 kHz).')
         parser.add_argument('-v', '--verbose',       default=False, action='store_true')
         parser.add_argument('-a', '--additional_args', default='',                        type=str)
         parser.add_argument('-g', '--gain',
