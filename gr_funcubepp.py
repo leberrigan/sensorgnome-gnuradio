@@ -45,7 +45,7 @@ class funcubepp_detect_pulse(gr.top_block):
 
         self.samp_rate = samp_rate = float(self.args.samp_rate)
         self.freq = freq = self.args.freq
-        self.freq_offset = freq_offset = float(4e3)
+        self.freq_offset = freq_offset = float(self.args.freq_offset)
         self.filter_cutoff_freq = filter_cutoff_freq = 12e3
         self.filter_transition_width = filter_transition_width = 8e3
         self.verbose = verbose = self.args.verbose
@@ -171,6 +171,11 @@ class funcubepp_detect_pulse(gr.top_block):
         parser.add_argument('-tr', '--target_rate', help='Target sample rate', default=192000, type=int)
         parser.add_argument('-s', '--samp_rate', help='Hardware sample rate', default=192000, type=int)
         parser.add_argument('-f', '--freq', help='Centre frequency in Hz', default=166376000, type=float)
+        parser.add_argument('-fo', '--freq_offset', default=4000, type=float,
+                            help='Hz the radio is tuned below --freq (the signal is digitally '
+                                 'shifted back, so reported offsets are unchanged). Increase it '
+                                 '(e.g. 8000-10000) to move tags further from the DC spike / '
+                                 'near-DC birdies. Keep below the filter cutoff (12 kHz).')
         parser.add_argument('-v', '--verbose', help='Print messages', default=False, action='store_true')
         parser.add_argument('-a', '--additional_args', help='Reserved for future use', default='', type=str)
         parser.add_argument('-g', '--gain', help='Gain as JSON, e.g. \'{"lna":20,"if":20}\'',

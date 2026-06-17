@@ -8,7 +8,7 @@
 # only needs a single complex input port.
 
 import numpy as np
-import detect_pulse_2 as pd
+import detect_pulse_3 as pd
 
 from gnuradio import gr
 

@@ -40,7 +40,7 @@ class rtlsdr_detect_pulse(gr.top_block):
 
         self.samp_rate = samp_rate = float(self.args.samp_rate)
         self.freq = freq = self.args.freq
-        self.freq_offset = freq_offset = float(4e3)
+        self.freq_offset = freq_offset = float(self.args.freq_offset)
         self.filter_cutoff_freq = filter_cutoff_freq = 15e3
         self.filter_transition_width = filter_transition_width = 1e4
         self.device = device = self.args.device
@@ -171,6 +171,11 @@ class rtlsdr_detect_pulse(gr.top_block):
         parser.add_argument('-tr','--target_rate', help='Target sample rate', default = 48e3, type = int)
         parser.add_argument('-s', '--samp_rate', help='Hardware sample rate', default = 3e6, type = int)
         parser.add_argument('-f', '--freq', help='Frequency', default = 166376000, type = float)
+        parser.add_argument('-fo','--freq_offset', default=4000, type=float,
+                            help='Hz the radio is tuned below --freq (the signal is digitally '
+                                 'shifted back, so reported offsets are unchanged). Increase it '
+                                 '(e.g. 8000-10000) to move tags further from the DC spike / '
+                                 'near-DC birdies. Keep below the filter cutoff (15 kHz).')
         parser.add_argument('-v', '--verbose', help='Print messages', default = False, action="store_true")
         parser.add_argument('-a', '--additional_args', help='Arguments to pass on to osmosdr on init', default = "sensitivity=21", type = str)
         parser.add_argument('-g', '--gain', help='Gain as JSON, e.g. \'{"rf":15,"if":0}\'', default = '{"rf":15,"if":0}', type = str)

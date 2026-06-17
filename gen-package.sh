@@ -21,7 +21,7 @@ install -m 755 gr_funcubepp.py     "$DESTDIR/usr/bin/"
 PYLIB="$DESTDIR/usr/lib/python3/dist-packages"
 install -d "$PYLIB"
 install -m 644 gr_detect_pulses.py     "$PYLIB/"
-install -m 644 detect_pulse_2.py       "$PYLIB/"
+install -m 644 detect_pulse_3.py       "$PYLIB/"
 install -m 644 detect_pulse_overlap.py "$PYLIB/"
 install -m 644 detect_pulse.py         "$PYLIB/"
 
