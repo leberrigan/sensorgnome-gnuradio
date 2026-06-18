@@ -274,6 +274,49 @@ consistency.
 
 ---
 
+## A note on the synthetic benchmark (`demo.py`)
+
+`demo.py` scores detectors against `test_signal.iq` — **100 pulses packed into 1
+second** at random frequencies (192 kHz). It was built to tune v2, and v2 does well
+on it; v3 does not:
+
+| detector (48 kHz, 512-sample chunks) | matched | false pos. | detected |
+|---|---|---|---|
+| detect_pulse_2 | 92/100 | 15 | 107 |
+| detect_pulse_3 (flood filter **off**) | 59/100 | 98 | 157 |
+| detect_pulse_3 (flood filter **on**) | **0/100** | 0 | 0 |
+
+Two effects: with the flood filter **on**, the dense random-frequency storm trips it
+(by design — it looks exactly like interference) and the whole second is dropped;
+with it **off**, v3 over-detects on the heavy pulse overlap. **This is the benchmark
+being adversarial to v3, not a real-world weakness** — it represents a pulse density
+that does not occur in the field.
+
+**How dense is "100 pulses/second", really?** A tag emits **4 pulses per burst**, and
+bursts repeat every **burst interval (BI) ≥ 3 s, more often 7 s+**. So N tags in
+range produce `4N / BI` pulses per second. v3's flood filter only starts to engage
+above ~30 pulses/s sustained (>12 pulses in its 0.4 s window), i.e. around
+**N ≈ 7.5 × BI** tags **all in radio range and bursting at once**:
+
+| burst interval | tags needed to reach the flood threshold | (benchmark's 100 pulses/s ≈) |
+|---|---|---|
+| 3 s | ~23 simultaneous tags | ~75 tags |
+| 5 s | ~38 | ~125 tags |
+| 7 s | ~53 | ~175 tags |
+| 10 s | ~75 | ~250 tags |
+
+So the benchmark's density is equivalent to **dozens-to-hundreds of tags transmitting
+simultaneously** within one receiver's range — far beyond a normal deployment, where
+a handful of tags are audible at a time. At realistic densities the per-window counts
+stay well under the threshold, so nothing is dropped. (And the relevant thresholds —
+`flood_max_pulses`, `flood_distinct_freqs` — are **tunable**: a known large colony
+can simply raise them.)
+
+Where moderate overlap *does* happen — a colony/flock of similar-burst-rate tags
+whose pulses occasionally coincide — v3's **fine frequency resolution is an
+advantage** (it separates the overlapping tags by offset, §"v3 vs VAH"), exactly the
+case VAH could not handle. The benchmark's pathology is *density*, not *overlap*.
+
 ## Tuning knobs (v3, in `Pulse_Detector.__init__`)
 
 * `sensitivity` — per-frame detection threshold in dB: `max`=18, `high`=22,

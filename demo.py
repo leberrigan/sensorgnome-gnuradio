@@ -229,6 +229,78 @@ print(f"               fields (timestamp, SNR, duration) remain fully populated.
 print(f"  RPi headroom: {instances_lp:.0f} theoretical instances in low_perf "
       f"vs {instances_cpu:.0f} in high_perf")
 
+# ── Section 6: detect_pulse_3 (STFT) in the 48 kHz pipeline regime ─────────────
+print()
+print("=" * 60)
+print("6. detect_pulse_3 (STFT tone detector)")
+print("=" * 60)
+
+# NOTE on fairness: this synthetic benchmark packs 100 random-frequency pulses into
+# 1 s (~20 per 0.2 s window) at 192 kHz with ~25% pulse occupancy and heavy overlap.
+# That is *adversarial* to detect_pulse_3:
+#   * its flood filter (built to reject on-channel voice / broadband noise) sees the
+#     dense random-frequency storm as interference and drops the whole second;
+#   * the dense overlap is outside its design regime (the live pipeline decimates to
+#     48 kHz and sees sparse 4-pulse bursts seconds apart, where it matches VAH).
+# So we (a) run it at 48 kHz like the real pipeline, and (b) report it with the flood
+# filter disabled to measure raw detection. See PULSE_DETECTION.md for the real-world
+# (sparse-burst) comparison where v3 matches/beats VAH.
+
+try:
+    from scipy import signal as _sig
+    import detect_pulse_3 as dp3
+
+    DEC = 4
+    iq48 = _sig.decimate(iq_data, DEC, ftype="fir").astype(np.complex64)
+    SR48 = SAMP_RATE // DEC
+    CHUNK48 = 512                                   # small, like GNU Radio's live buffers
+    REC48 = len(iq48) / SR48
+
+    def run48(mod, flood_off=False, **kw):
+        det = mod.Pulse_Detector(output_type="test", samp_rate=SR48, verbose=False,
+                                 pulse_len_ms=2.5, **kw)
+        if flood_off and hasattr(det, "flood_max_pulses"):   # disable interference rejection
+            det.flood_max_pulses = 10**9
+            det.flood_distinct_freqs = 10**9
+        raw = []
+        t0 = time.perf_counter()
+        for c in range(len(iq48) // CHUNK48):
+            with contextlib.redirect_stdout(io.StringIO()):
+                raw.extend(det.detect([iq48[c * CHUNK48:(c + 1) * CHUNK48]])[0])
+        if hasattr(det, "flush"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                raw.extend(det.flush())           # deferred flood buffer -> emit the tail
+        elapsed = time.perf_counter() - t0
+        detected = sorted(float(d.split(",")[0]) for d in raw
+                          if d and not d.startswith("F"))   # drop F<port> flood-interval records
+        used, matched = set(), 0
+        for gs, _ in ground_truth:
+            for j, ts in enumerate(detected):
+                if j in used:
+                    continue
+                if abs(ts - gs) < MATCH_TOL:
+                    matched += 1; used.add(j); break
+        return matched, len(detected) - len(used), elapsed, len(detected)
+
+    m2,    fp2_48, el2_48, n2    = run48(dp2, high_perf=True)
+    m_off, fp_off, el_off, n_off = run48(dp3, flood_off=True,  sensitivity="max")
+    m_on,  fp_on,  el_on,  n_on  = run48(dp3, flood_off=False, sensitivity="max")
+
+    print(f"  Regime        : {SR48//1000} kHz (decimated /{DEC}), {CHUNK48}-sample chunks")
+    print(f"  {'detector':30}{'matched':>9}{'FP':>5}{'detected':>10}{'realtime':>10}")
+    print(f"  {'-'*64}")
+    print(f"  {'detect_pulse_2':30}{m2:>6}/100{fp2_48:>5}{n2:>10}{el2_48/REC48:>9.2f}x")
+    print(f"  {'detect_pulse_3 (flood OFF)':30}{m_off:>6}/100{fp_off:>5}{n_off:>10}{el_off/REC48:>9.2f}x")
+    print(f"  {'detect_pulse_3 (flood ON)':30}{m_on:>6}/100{fp_on:>5}{n_on:>10}{el_on/REC48:>9.2f}x")
+    print()
+    print("  flood ON drops everything: the dense random-pulse storm trips the flood")
+    print("  filter by design. flood OFF shows raw detection. v3 over-detects on this")
+    print("  dense/overlapping signal; in the sparse-burst live regime it matches VAH")
+    print("  (see PULSE_DETECTION.md: 40 vs 37 bursts on hardware).")
+except Exception as exc:
+    print(f"  (detect_pulse_3 unavailable: {exc})")
+
+
 print()
 print("=" * 60)
 print("HTML plots produced by airspy_time_domain_2.py:")

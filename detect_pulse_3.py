@@ -100,6 +100,9 @@ class Pulse_Detector:
         self.time_chunk_start = None
         self.recent_emitted_abs = []        # absolute onset samples, for cross-chunk dedup
         self.dedup_tol = self.stft_hop
+        # Re-anchor the sample-clock to wall time if it drifts past this (dropped
+        # samples step every later timestamp behind real time). Mirrors detect_pulse_2.
+        self.time_error_threshold = 0.1     # seconds
 
         # --- flood detection: deferred across chunks ---
         # GnuRadio hands work() small, variable buffers, so the flood test cannot
@@ -134,6 +137,22 @@ class Pulse_Detector:
             carry_n = 0
 
         self.time_chunk_start = self.reference_time + self.sample_counter / self.samp_rate
+
+        # Resync the sample-clock to wall time on drift (e.g. a scheduler overflow
+        # drops samples, so sample_counter lags and every later timestamp steps
+        # behind). Flush the deferred flood buffer at the OLD clock first, else a
+        # pending pulse would be stranded with a now-future timestamp.
+        if self.output_type != "test":
+            now = time.time()
+            if abs(now - (self.time_chunk_start + n / self.samp_rate)) > self.time_error_threshold:
+                self._process(float("inf"), output, final=True)
+                if self.flood_open:
+                    self._emit_flood(output)
+                self.sample_counter = 0
+                self.reference_time = now - n / self.samp_rate
+                self.time_chunk_start = self.reference_time
+                self.recent_emitted_abs = []
+
         buf_abs_start = self.sample_counter - carry_n
 
         for r in self._detect(buf, buf_abs_start, carry_n):
@@ -268,7 +287,12 @@ class Pulse_Detector:
             pk_frame, pk_bin, peak_mag = fr[pk], bn[pk], blob_mag[pk]
 
             onset_sample = int(starts[pk_frame])           # best-aligned window start ~ pulse onset
-            if onset_sample < carry_n - hop or onset_sample > end_guard:
+            # Lower bound must meet the PREVIOUS chunk's end_guard cutoff exactly, or
+            # a (pulse_len - hop)-sample gap opens at every chunk boundary and pulses
+            # landing there are detected by neither chunk (severe with small GR
+            # buffers). carry_n - pulse_len_samples closes the gap; recent_emitted_abs
+            # dedup absorbs the small overlap.
+            if onset_sample < carry_n - self.pulse_len_samples or onset_sample > end_guard:
                 continue
 
             coarse_freq = float(self.freqs[pk_bin])
