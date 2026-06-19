@@ -96,18 +96,19 @@ fl = lambda p: SNRS[np.argmax(p >= 50)] if (p >= 50).any() else np.nan
 print(f"floors  v3={fl(Pd3)} dB  VAH={fl(Pdv)} dB")
 
 # ---------------- overlap: two tags, different freq offset, overlapping in time
-DF = 500.0                                        # 0.5 kHz apart -> within VAH's 2 kHz bin
-ov = noise(PL) * 0.0
-ov = ov.astype(complex)
-add_pulse(ov, 0, 26, 0.0)                          # tag A at template freq
-add_pulse(ov, 0, 26, DF)                           # tag B, +0.5 kHz, same time (overlap)
+DF = 500.0                                        # 0.5 kHz offset between the two tags
+ov = np.zeros(PL, dtype=complex)
+add_pulse(ov, 0, 28, 0.0)                          # tag A (stronger), template freq
+add_pulse(ov, 0, 22, DF)                           # tag B (weaker, +0.5 kHz), SAME time
 ov = ov + noise(PL) * 0.02
-# VAH-resolution view: native 24-sample FFT magnitude (interpolated for a smooth curve)
-fv = np.fft.fftshift(np.fft.fftfreq(NFV, 1 / SR))
-Sv = np.fft.fftshift(np.abs(np.fft.fft(ov[:WINV] * np.hanning(WINV), NFV)))
-# v3-resolution view: full-pulse zero-padded FFT
+# both detectors estimate frequency from a full-pulse FFT; this high-res spectrum is
+# what each one's fine FFT sees -- the two tags ARE resolvable in frequency.
 f3 = np.fft.fftshift(np.fft.fftfreq(4096, 1 / SR))
-S3 = np.fft.fftshift(np.abs(np.fft.fft(ov * np.hanning(PL), 4096)))
+S3 = np.fft.fftshift(np.abs(np.fft.fft(ov * np.hanning(PL), 4096))); S3 /= S3.max()
+fA, fB = F0, F0 + DF
+def _peak(f):
+    i = int(np.argmin(np.abs(f3 - f))); return float(S3[max(0, i - 4):i + 5].max())
+hA, hB = _peak(fA), _peak(fB)
 
 # ---------------- plot
 plt.rcParams.update({"font.size": 9})
@@ -135,30 +136,36 @@ axA.text(0.03, 0.55,
          transform=axA.transAxes, va="top", fontsize=8, color="0.25")
 
 axB = fig.add_subplot(gs[0, 1])
-sel = (f3 > F0 - 2500) & (f3 < F0 + 3000)
-axB.plot(f3[sel] / 1000, S3[sel] / S3[sel].max(), color=C3, lw=1.4,
-         label="v3  (~187 Hz bins + refine)")
-selv = (fv > F0 - 2500) & (fv < F0 + 3000)
-axB.plot(fv[selv] / 1000, Sv[selv] / Sv[selv].max(), "-s", ms=5, color=CV, lw=1.4,
-         label="VAH  (2 kHz bins)")
-for fpk, lab in [(F0, "tag A"), (F0 + DF, "tag B")]:
-    axB.axvline(fpk / 1000, color="0.6", ls=":", lw=0.9)
-    axB.text(fpk / 1000, 1.04, lab, ha="center", fontsize=8, color="0.4")
+sel = (f3 > F0 - 1500) & (f3 < F0 + 2000)
+axB.fill_between(f3[sel] / 1000, S3[sel], color="0.88")
+axB.plot(f3[sel] / 1000, S3[sel], color="0.45", lw=1.3, label="full-pulse spectrum (both see this)")
+axB.axvline(fA / 1000, color="0.6", ls=":", lw=0.8); axB.axvline(fB / 1000, color="0.6", ls=":", lw=0.8)
+axB.text(fA / 1000, 1.06, "tag A\n(stronger)", ha="center", fontsize=8, color="0.4")
+axB.text(fB / 1000, hB + 0.08, "tag B\n(weaker)", ha="center", fontsize=8, color="0.4")
+# v3 emits a pulse per blob -> BOTH tags
+axB.scatter([fA / 1000, fB / 1000], [hA, hB], s=150, facecolors="none",
+            edgecolors=C3, linewidths=2.2, zorder=5, label="v3: emits BOTH  (one pulse / blob)")
+# VAH keeps only the single strongest bin per time -> tag A only
+axB.scatter([fA / 1000], [hA], s=120, marker="x", color=CV, linewidths=2.6,
+            zorder=6, label="VAH: keeps ONLY strongest  (one winner / time)")
+axB.annotate("dropped", (fB / 1000, hB), (fB / 1000 + 0.35, hB + 0.18),
+             fontsize=8, color=CV, arrowprops=dict(arrowstyle="->", color=CV))
 axB.set_xlabel("frequency (kHz)"); axB.set_ylabel("normalized magnitude")
-axB.set_ylim(0, 1.15); axB.legend(loc="upper right", fontsize=8.5)
-axB.set_title(f"(b) overlap separation — two tags {DF/1000:.1f} kHz apart, same instant",
+axB.set_ylim(0, 1.25); axB.legend(loc="upper right", fontsize=8)
+axB.set_title(f"(b) overlap: two tags {DF/1000:.1f} kHz apart, transmitting at the same instant",
               fontsize=9.5, loc="left")
-axB.text(0.03, 0.5,
-         "VAH's 2 kHz bins merge the two\n"
-         "tags into ONE blob -> can't be\n"
-         "separated -> burst rejected.\n\n"
-         "v3 resolves TWO peaks -> both\n"
-         "tags decoded. Critical for\n"
-         "colonies/flocks of similar-rate\n"
-         "tags whose pulses overlap.",
+axB.text(0.03, 0.62,
+         "both resolve the two tones in\n"
+         "frequency. The difference is the\n"
+         "OUTPUT rule: VAH emits one pulse\n"
+         "per time (the strongest bin), so\n"
+         "the weaker tag is dropped. v3\n"
+         "emits a pulse per blob -> both\n"
+         "tags reported. (Not a precision\n"
+         "difference -- freqsd ties.)",
          transform=axB.transAxes, va="top", fontsize=8, color="0.25")
 
-fig.suptitle("v3 vs VAH — match the sensitivity, beat the frequency resolution  "
-             "(real pulse + AWGN)", fontsize=11, weight="bold")
+fig.suptitle("v3 vs VAH — match the sensitivity & frequency precision; add overlap "
+             "separation  (real pulse + AWGN)", fontsize=11, weight="bold")
 fig.savefig("v3_vs_vah.png", dpi=130)
 print("wrote v3_vs_vah.png")
